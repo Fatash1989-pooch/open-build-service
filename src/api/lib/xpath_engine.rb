@@ -1,4 +1,5 @@
 # rubocop:disable Layout/LineLength
+# rubocop:disable Metrics/MethodLength
 class XpathEngine
   require 'rexml/parsers/xpathparser'
 
@@ -220,7 +221,10 @@ class XpathEngine
         'review/@by_group' => { cpart: 'r.by_group', joins: 'LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id' },
         'review/@by_project' => { cpart: 'r.by_project', joins: 'LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id' },
         'review/@by_package' => { cpart: 'r.by_package', joins: 'LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id' },
+        'review/@when' => { cpart: 'bs_requests.updated_at', joins: 'LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id' },
         'review/@state' => { cpart: 'r.state', joins: 'LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id' },
+        'review/history/@when' => { cpart: 'he.created_at', joins: "LEFT JOIN reviews r ON r.bs_request_id = bs_requests.id LEFT JOIN history_elements he ON (he.op_object_id = r.id AND he.type IN (\"#{HistoryElement::Review.descendants.join('","')}\") )" },
+        'history/@when' => { cpart: 'he.created_at', joins: "LEFT JOIN history_elements he ON (he.op_object_id = bs_requests.id AND he.type IN (\"#{HistoryElement::Request.descendants.join('","')}\") )" },
         'history/@who' => { cpart: 'husers.login', joins: ["LEFT JOIN history_elements he ON (he.op_object_id = bs_requests.id AND he.type IN (\"#{HistoryElement::Request.descendants.join('","')}\") )",
                                                            'LEFT JOIN users husers ON he.user_id = husers.id'] },
 
@@ -326,7 +330,7 @@ class XpathEngine
                 'LEFT JOIN attrib_values req_order_attrib_value ON req_order_attrib.id = req_order_attrib_value.attrib_id'] << @joins
       order = ['req_order_attrib_value.value DESC', :priority, :created_at]
     when 'users'
-      relation = User.all
+      relation = User.not_deleted
     when 'issues'
       relation = Issue.all
     when 'channels'
@@ -648,3 +652,4 @@ class XpathEngine
   end
 end
 # rubocop:enable Layout/LineLength
+# rubocop:enable Metrics/MethodLength

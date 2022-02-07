@@ -73,6 +73,21 @@ my $proxy = $BSConfig::proxy;
 my $noproxy = $BSConfig::noproxy;
 my $maxchild = $BSConfig::service_maxchild;
 
+my $servicedef_obs_scm_bridge = {
+  'name' => 'obs_scm_bridge',
+  'parameter' => [
+    {
+      'name' => 'url' ,
+      'description' => 'Specify URL to checkout.',
+      'required' => undef,
+    },
+    {
+      'name' => 'projectmode' ,
+      'description' => 'Run a project update.',
+    }
+  ],
+};
+
 use warnings;
 
 sub usage {
@@ -167,7 +182,12 @@ sub run_source_update {
         next;
       }
       BSUtil::printlog("Run for $name");
-      my $servicedef = readxml("$rootservicedir/$name.service", $BSXML::servicetype);
+      my $servicedef;
+      if ($name eq 'obs_scm_bridge') {
+	$servicedef = $servicedef_obs_scm_bridge;
+      } else {
+        $servicedef = readxml("$rootservicedir/$name.service", $BSXML::servicetype);
+      }
       my @run;
       if (defined $BSConfig::service_wrapper->{$name} ) {
         push @run, $BSConfig::service_wrapper->{$name};
@@ -248,11 +268,13 @@ sub run_source_update {
   rm_rf('.old');
 
   # get all generate files
-  my @send = map {{'name' => $_, 'filename' => "$_"}} grep {/^_service[_:]/} ls('.');
+  my @send = sort(ls('.'));
+  @send = grep {/^_service[_:]/} @send;
+  @send = map {{'name' => $_, 'filename' => "$_"}} @send;
 
   # check for non files (symlinks or directories)
   for my $file (@send) {
-    die("Service result contains unreadable file '$file->{'filename'}'\n") unless -f $file->{'filename'};
+    die("Service result contains unreadable file '$file->{'filename'}'\n") unless ! -l $file->{'filename'} && -f _;
   }
 
   # send everything back for real

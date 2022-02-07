@@ -2485,11 +2485,20 @@ sub copybuild {
       $needsign = 1 if $bin =~ /\.(?:d?rpm|sha256|iso)$/;
       my $nbin = $bin;
       my $setrelease = $cgi->{'setrelease'};
+      my $oldsetrelease;
+      $oldsetrelease = readstr("$odir/.setrelease") if -e "$odir/.setrelease";
       # directories are stripped of the build/release number by default
       if (!defined($setrelease)) {
         $setrelease = '' if -d "$odir/$bin";
         $setrelease = '' if $bin =~ /^(.*)\.report$/ && -d "$odir/$1";    # need to keep report in sync with dir
         $setrelease = '' if $bin =~ /^(.*)\.milestone$/ && -d "$odir/$1"; # need to keep milestone as well
+      }
+      if (defined($oldsetrelease) && $oldsetrelease eq '-') {
+        # we use '-' as "released without setrelease" marker
+        undef $oldsetrelease;
+        $oldsetrelease = '' if -d "$odir/$bin";
+        $oldsetrelease = '' if $bin =~ /^(.*)\.report$/ && -d "$odir/$1";    # need to keep report in sync with dir
+        $oldsetrelease = '' if $bin =~ /^(.*)\.milestone$/ && -d "$odir/$1"; # need to keep milestone as well
       }
       if (defined($setrelease)) {
 	$setrelease =~ s/^-?/-/; # "-" will drop the release tag
@@ -2498,13 +2507,16 @@ sub copybuild {
         # overwrite -BuildX.Y part with -BuildV.W (using not matching numbers)
         # but this must not lead to double matches
 
-        my $oldsetrelease;
-        $oldsetrelease = readstr("$odir/.setrelease") if -e "$odir/.setrelease";
 	if (defined($oldsetrelease)) {
-	  if ($oldsetrelease ne $oldsetrelease) {
+	  if ($setrelease ne $oldsetrelease) {
             # kiwi product || appliance
-            $nbin =~ s/(-\Q$oldsetrelease\E)(-Media\d?(?:\..*?)?)$/-$setrelease$2/ ||
-               $nbin =~ s/$oldsetrelease\./$setrelease./;
+	    if ($oldsetrelease eq '') {
+              $nbin =~ s/(-Media\d?(?:\..*?)?)$/$setrelease$1/ ||
+                 $nbin =~ s/(^.*-)/$1$setrelease/;
+	    } else {
+              $nbin =~ s/(\Q$oldsetrelease\E)(-Media\d?(?:\..*?)?)$/$setrelease$2/ ||
+                 $nbin =~ s/\Q$oldsetrelease\E\./$setrelease./;
+	    }
           }
         } else {
           # kiwi product || appliance
@@ -2512,7 +2524,7 @@ sub copybuild {
              $nbin =~ s/-Build[\d.]+\./$setrelease./;
         }
 	$nbin =~ s/-([^-.]+).([^.]*.rpm)$/$setrelease.$2/; # rpms
-        writestr("$dir/.setrelease", undef, $setrelease);
+        writestr("$dir/.setrelease", undef, defined($cgi->{'setrelease'}) ? $setrelease : "-");
       }
       $renamed{$bin} = $nbin if $bin ne $nbin;
       if (-d "$odir/$bin") {
@@ -2526,6 +2538,7 @@ sub copybuild {
 	$to =~ s/\.containerinfo$//;
 	# the hacky way to change json
 	$containerinfo =~ s/(\"file\": [^\n]*)\Q$from\E/$1$to/s;
+	unlink("$dir/$nbin");
 	writestr("$dir/$nbin", undef, $containerinfo);
       } elsif ($bin =~ /\.obsbinlnk$/) {
 	my $obsbinlnk = BSUtil::retrieve("$odir/$bin");
@@ -2536,6 +2549,7 @@ sub copybuild {
 	$obsbinlnk->{'path'} =~ s/.*\///;
 	$obsbinlnk->{'path'} =~ s/\Q$from\E/$to/;
 	$obsbinlnk->{'path'} = "../$packid/$obsbinlnk->{'path'}";
+	unlink("$dir/$nbin");
 	BSUtil::store("$dir/$nbin", undef, $obsbinlnk);
       } else {
 	# patch in new file name if we renamed files
@@ -2555,6 +2569,7 @@ sub copybuild {
 	    $writeit = 1 if $shafile =~ s/([ \/])\Q$_\E\n/$1$renamed{$_}\n/g;
 	  }
 	  if ($writeit) {
+	    unlink("$dir/$nbin");
 	    writestr("$dir/$nbin", undef, $shafile);
 	    next;
 	  }
@@ -3298,6 +3313,10 @@ sub getbuildinfo_post {
   if ($bconf->{'type'} eq 'kiwi') {
     $info->{'imagetype'} = $d->{'imagetype'};
     $info->{'imagearch'} = $d->{'exclarch'} if $d->{'exclarch'};
+    if (($info->{'imagetype'} || '') eq 'product') {
+      $info->{'nodbgpkgs'} = 1 if defined($d->{'debugmedium'}) && $d->{'debugmedium'} <= 0;
+      $info->{'nosrcpkgs'} = 1 if defined($d->{'sourcemedium'}) && $d->{'sourcemedium'} <= 0;
+    }
   }
 
   my $pdata = {'buildtype' => $bconf->{'type'}, 'info' => [ $info ]};
@@ -4178,6 +4197,11 @@ sub registry_manifest {
   die("404 NAME_UNKNOWN\n") unless -d $repodir;
   my $mani_json;
   my $is_manifest;
+  if ($manifest =~ /^sha256-([0-9a-f]{64}).sig$/) {
+    my $digest = "sha256:$1";
+    my $sigs = BSUtil::retrieve("$repodir/:cosign", 1);
+    $manifest = $sigs->{'digests'}->{$digest} if $sigs && $sigs->{'digests'}->{$digest};
+  }
   if ($manifest !~ /^sha256:[0-9a-f]{64}$/s) {
     $mani_json = readstr("$repodir/:tags/$manifest", 1);
   } else {

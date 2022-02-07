@@ -226,7 +226,7 @@ sub upload_all_containers {
 	  undef $gun unless defined $pubkey;
 	}
 	$have_some_trust = 1 if $gun;
-	do_local_uploads($extrep, $projid, $repoid, $repository, $gun, $containers, $pubkey, $signargs, $multicontainer, $uptags);
+	do_local_uploads($extrep, $projid, $repoid, $repository, $gun, $containers, $pubkey, $signargs, $multicontainer, $uptags, $registry->{'rekorserver'});
 	my $pullserver = $registry->{'server'};
 	undef $pullserver if $pullserver && $pullserver eq 'local:';
 	if ($pullserver) {
@@ -254,7 +254,7 @@ sub upload_all_containers {
       for my $joinp (sort keys %todo) {
 	my @tags = @{$todo{$joinp}};
 	my @containerinfos = map {$containers->{$_}} @{$todo_p{$joinp}};
-	my ($digest, @refs) = upload_to_registry($registry, \@containerinfos, $repository, \@tags);
+	my ($digest, @refs) = upload_to_registry($registry, \@containerinfos, $repository, \@tags, $projid, $signargs, $pubkey);
 	add_notary_upload($notary_uploads, $registry, $repository, $digest, \@tags);
 	$containerdigests .= $digest;
 	push @{$allrefs{$_}}, @refs for @{$todo_p{$joinp}};
@@ -267,7 +267,7 @@ sub upload_all_containers {
     for my $repository (@{$old_container_repositories->{$regname} || []}) {
       next if $uploads{$repository};
       if ($registryserver eq 'local:') {
-        do_local_uploads($extrep, $projid, $repoid, $repository, undef, $containers, $pubkey, $signargs, $multicontainer, {});
+        do_local_uploads($extrep, $projid, $repoid, $repository, undef, $containers, $pubkey, $signargs, $multicontainer, {}, $registry->{'rekorserver'});
 	next;
       }
       my $containerdigests = '';
@@ -347,7 +347,6 @@ sub reconstruct_container {
   containerinfos - array of containers to upload (more than one for multiarch)
   repository     - registry repository name
   tags           - array of tags to upload to
-  notary_uploads - hash to store notary information
 
  Returns:
   containerdigests + public references to uploaded containers
@@ -355,7 +354,7 @@ sub reconstruct_container {
 =cut
 
 sub upload_to_registry {
-  my ($registry, $containerinfos, $repository, $tags) = @_;
+  my ($registry, $containerinfos, $repository, $tags, $projid, $signargs, $pubkey) = @_;
 
   return unless @{$containerinfos || []} && @{$tags || []};
   
@@ -401,6 +400,23 @@ sub upload_to_registry {
   my @opts = map {('-t', $_)} @$tags;
   push @opts, '-m' if @uploadfiles > 1;		# create multi arch container
   push @opts, '-B', $blobdir if $blobdir;
+  my $cosign = $registry->{'cosign'};
+  $cosign = $cosign->($repository, $projid) if $cosign && ref($cosign) eq 'CODE';
+  if (defined($pubkey) && $cosign) {
+    my $gun = $registry->{'notary_gunprefix'} || $registry->{'server'};
+    $gun =~ s/^https?:\/\///;
+    $gun .= "/$repository";
+    my @signargs;
+    push @signargs, '--project', $projid if $BSConfig::sign_project;
+    push @signargs, @{$signargs || []};
+    my $pubkeyfile = "$uploaddir/publisher.$$.pubkey";
+    push @tempfiles, $pubkeyfile;
+    mkdir_p($uploaddir);
+    unlink($pubkeyfile);
+    writestr($pubkeyfile, undef, $pubkey);
+    push @opts, '--cosign', '-p', $pubkeyfile, '-G', $gun, @signargs;
+    push @opts, '--rekor', $registry->{'rekorserver'} if $registry->{'rekorserver'};
+  }
   my @cmd = ("$INC[0]/bs_regpush", '--dest-creds', '-', @opts, '-F', $containerdigestfile, $registryserver, $repository, @uploadfiles);
   print "Uploading to registry: @cmd\n";
   my $result = BSPublisher::Util::qsystem('echo', "$registry->{user}:$registry->{password}\n", 'stdout', '', @cmd);
@@ -463,6 +479,7 @@ sub upload_to_notary {
   mkdir_p($uploaddir);
   unlink($pubkeyfile);
   writestr($pubkeyfile, undef, $pubkey);
+  my %failed_uploads;
   for my $uploadkey (sort keys %$notary_uploads) {
     my $uploaddata = $notary_uploads->{$uploadkey};
     my $registry = $uploaddata->{'registry'};
@@ -474,12 +491,14 @@ sub upload_to_notary {
     print "Uploading to notary: @cmd\n";
     my $result = BSPublisher::Util::qsystem('echo', "$registry->{user}:$registry->{password}\n", 'stdout', '', @cmd);
     unlink($containerdigestfile);
-    if ($result) {
-      unlink($pubkeyfile);
-      die("Error while uploading to notary: $result\n");
-    }
+    $failed_uploads{$uploaddata->{'gun'}} = $result if $result;
   }
   unlink($pubkeyfile);
+  if (%failed_uploads) {
+     warn("Error while uploading to notary:\n");
+     warn("failed for $_ $failed_uploads{$_}\n") for sort keys(%failed_uploads);
+     die("Error while uploading to notary\n");
+  }
 }
 
 =head2 delete_from_notary - delete collected repositories
@@ -536,7 +555,7 @@ sub delete_container_repositories {
 }
 
 sub do_local_uploads {
-  my ($extrep, $projid, $repoid, $repository, $gun, $containers, $pubkey, $signargs, $multicontainer, $uptags) = @_;
+  my ($extrep, $projid, $repoid, $repository, $gun, $containers, $pubkey, $signargs, $multicontainer, $uptags, $rekorserver) = @_;
 
   my %todo;
   my @tempfiles;
@@ -561,7 +580,7 @@ sub do_local_uploads {
     }
   }
   eval {
-    BSPublisher::Registry::push_containers("$projid/$repoid", $repository, $gun, $multicontainer, \%todo, $pubkey, $signargs);
+    BSPublisher::Registry::push_containers("$projid/$repoid", $repository, $gun, $multicontainer, \%todo, $pubkey, $signargs, $rekorserver);
   };
   unlink($_) for @tempfiles;
   die($@) if $@;

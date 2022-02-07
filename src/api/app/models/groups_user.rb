@@ -4,8 +4,6 @@ class GroupsUser < ApplicationRecord
   belongs_to :user
   belongs_to :group
 
-  validates :user, presence: true
-  validates :group, presence: true
   validate :validate_duplicates, on: :create
   validates_with AllowedUserValidator
 
@@ -24,6 +22,7 @@ end
 #
 #  id         :integer          not null, primary key
 #  email      :boolean          default(TRUE)
+#  web        :boolean          default(TRUE)
 #  created_at :datetime
 #  group_id   :integer          default(0), not null, indexed => [user_id]
 #  user_id    :integer          default(0), not null, indexed => [group_id], indexed

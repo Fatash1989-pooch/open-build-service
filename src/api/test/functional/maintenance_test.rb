@@ -1017,7 +1017,7 @@ class MaintenanceTests < ActionDispatch::IntegrationTest
     post '/source/BaseDistro2.0/packNew', params: { cmd: 'branch', target_project: incident_project, missingok: 1, extend_package_names: 1, add_repositories: 1 }
     assert_response :success
     Timecop.freeze(1)
-    raw_put "/source/#{incident_project}/packNew.BaseDistro2.0_LinkedUpdateProject/packageNew.spec", File.open("#{Rails.root}/test/fixtures/backend/binary/packageNew.spec").read
+    raw_put "/source/#{incident_project}/packNew.BaseDistro2.0_LinkedUpdateProject/packageNew.spec", File.read("#{Rails.root}/test/fixtures/backend/binary/packageNew.spec")
     assert_response :success
 
     # search will find this new and not yet processed incident now.
@@ -1409,6 +1409,16 @@ class MaintenanceTests < ActionDispatch::IntegrationTest
     assert_response :success
     assert_xml_tag(parent: { tag: 'review' }, tag: 'comment', content: 'blahfasel')
     assert_xml_tag(parent: { tag: 'state' }, tag: 'comment', content: 'All reviewers accepted request')
+
+    get '/search/request', params: { match: 'review/@when>="2010-07-12"' }
+    print @response.body
+    assert_response :success
+    assert_xml_tag tag: 'request', attributes: { id: reqid }
+
+    get '/search/request', params: { match: 'review/history/@when>="1975-07-12"' }
+    print @response.body
+    assert_response :success
+    assert_xml_tag tag: 'request', attributes: { id: reqid }
 
     SendEventEmailsJob.new.perform
     ActionMailer::Base.deliveries.clear
@@ -1852,7 +1862,7 @@ class MaintenanceTests < ActionDispatch::IntegrationTest
     assert_response :success
     p = Package.find_by_project_and_name('BaseDistro3', 'pack2')
     Backend::Connection.put('/source/BaseDistro3/pack2/_meta?user=king', p.to_axml)
-    raw_put '/source/BaseDistro3/pack2/pack2.spec', File.open("#{Rails.root}/test/fixtures/backend/binary/package.spec").read
+    raw_put '/source/BaseDistro3/pack2/pack2.spec', File.read("#{Rails.root}/test/fixtures/backend/binary/package.spec")
     assert_response :success
     inject_build_job('BaseDistro3', 'pack2.0', 'BaseDistro3_repo', 'i586', 'package_newweaktags-1.0-1.x86_64.rpm')
     inject_build_job('BaseDistro3', 'pack2.0:package_multibuild', 'BaseDistro3_repo', 'i586', 'package_newweaktags-1.0-1.x86_64.rpm')

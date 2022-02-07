@@ -286,6 +286,7 @@ our $productdesc = [
             'repo_only',                    # do not create iso files
             'drop_repo',                    # remove trees, just having iso files as result
             'mediastyle',
+            'volumeid',                     # non standard volume id inside of iso files
             'firmware',
             'registration',
             'create_repomd', # old format only
@@ -327,7 +328,7 @@ our $productdesc = [
                'use_suggested',
                'use_required',
                'create_pattern',
-               [[ 'package' => 'name', 'medium', 'relationship', 'arch', 'addarch' ]],
+               [[ 'package' => 'name', 'medium', 'module', 'relationship', 'arch', 'addarch' ]],
                [[ 'include' => 'group', 'relationship' ]],
             ]],
             # product dependency got moved to product definition

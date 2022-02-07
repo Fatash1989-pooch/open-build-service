@@ -38,8 +38,8 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
   RSpec.shared_context 'project and package does not exist' do
     let(:step_instructions) do
       {
-        source_project: 'invalid project',
-        source_package: 'invalid package',
+        source_project: 'invalid_project',
+        source_package: 'invalid_package',
         target_project: target_project_name
       }
     end
@@ -272,8 +272,8 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
                 'target_repository_full_name' => 'openSUSE/open-build-service' }
             end
             let(:update_payload) do
-              { 'action' => 'synchronize', 'commit_sha' => '456', 'event' => 'pull_request', 'pr_number' => 1, 'scm' => 'github', 'source_repository_full_name' => 'reponame',
-                'target_repository_full_name' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
+              { 'action' => 'synchronize', 'commit_sha' => '456', 'event' => 'pull_request', 'pr_number' => 1, 'scm' => 'github',
+                'source_repository_full_name' => 'reponame', 'target_repository_full_name' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
             end
             let(:commit_sha) { '456' }
             let(:existing_branch_request_file) do
@@ -297,7 +297,7 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
         end
       end
 
-      context 'for a push event' do
+      context 'with a push event for a commit' do
         let(:scm_webhook) do
           ScmWebhook.new(payload: {
                            scm: 'github',
@@ -305,7 +305,8 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
                            target_branch: 'main',
                            source_repository_full_name: 'reponame',
                            commit_sha: commit_sha,
-                           target_repository_full_name: 'openSUSE/open-build-service'
+                           target_repository_full_name: 'openSUSE/open-build-service',
+                           ref: 'refs/heads/branch_123'
                          })
         end
         let(:final_target_project_name) { target_project_name }
@@ -318,6 +319,64 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
         end
 
         it_behaves_like 'successful on a new push event'
+        it_behaves_like 'failed when source_package does not exist'
+        it_behaves_like 'project and package does not exist'
+        it_behaves_like 'failed without link permissions'
+        it_behaves_like 'insufficient permission on target project'
+        it_behaves_like 'insufficient permission to create new target project'
+      end
+
+      context 'with a push event for a tag' do
+        let(:scm_webhook) do
+          ScmWebhook.new(payload: {
+                           scm: 'github',
+                           event: 'push',
+                           target_branch: 'main',
+                           source_repository_full_name: 'openSUSE/open-build-service',
+                           tag_name: 'release_abc',
+                           commit_sha: '123456789012345',
+                           target_repository_full_name: 'openSUSE/open-build-service',
+                           ref: 'refs/tags/release_abc'
+                         })
+        end
+        let(:octokit_client) { instance_double(Octokit::Client) }
+        let(:target_project_final_name) { "home:#{user.login}" }
+        let(:final_package_name) { "#{package.name}-release_abc" }
+        let(:step_instructions) do
+          {
+            source_project: package.project.name,
+            source_package: package.name,
+            target_project: target_project_name
+          }
+        end
+
+        before do
+          # branching a package to an existing project doesn't take over the set repositories
+          create(:repository, name: 'Unicorn_123', project: user.home_project, architectures: ['x86_64', 'i586', 'ppc', 'aarch64'])
+          create(:repository, name: 'openSUSE_Tumbleweed', project: user.home_project, architectures: ['x86_64'])
+
+          allow(Octokit::Client).to receive(:new).and_return(octokit_client)
+          allow(octokit_client).to receive(:create_status).and_return(true)
+        end
+
+        it 'does not report back to the SCM' do
+          allow(SCMStatusReporter).to receive(:new)
+          subject.call
+          expect(SCMStatusReporter).not_to have_received(:new)
+        end
+
+        it { expect { subject.call }.to(change(Project, :count).by(0)) }
+        it { expect { subject.call }.to(change(Package, :count).by(2)) }
+        it { expect(subject.call.project.name).to eq(target_project_name) }
+        it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count)) }
+        it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count)) }
+        it { expect { subject.call.source_file('_branch_request') }.not_to raise_error }
+        it { expect(subject.call.source_file('_branch_request')).to include('123456789012345') }
+        it { expect { subject.call.source_file('_link') }.not_to raise_error }
+        it { expect(subject.call.source_file('_link')).to eq('<link project="foo_project" package="bar_package"/>') }
+        it { expect(subject.call.project.packages.map(&:name)).to include('_project') }
+        it { expect { subject.call.project.packages.find_by(name: '_project').source_file('_service') }.not_to raise_error }
+
         it_behaves_like 'failed when source_package does not exist'
         it_behaves_like 'project and package does not exist'
         it_behaves_like 'failed without link permissions'
@@ -380,8 +439,8 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
                 'path_with_namespace' => 'openSUSE/open-build-service' }
             end
             let(:update_payload) do
-              { 'action' => 'update', 'commit_sha' => '456', 'event' => 'Merge Request Hook', 'pr_number' => 1, 'scm' => 'gitlab', 'source_repository_full_name' => 'reponame',
-                'path_with_namespace' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
+              { 'action' => 'update', 'commit_sha' => '456', 'event' => 'Merge Request Hook', 'pr_number' => 1, 'scm' => 'gitlab',
+                'source_repository_full_name' => 'reponame', 'path_with_namespace' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
             end
             let(:commit_sha) { '456' }
             let(:existing_branch_request_file) do
@@ -399,7 +458,7 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
         end
       end
 
-      context 'for a push event' do
+      context 'with a push event for a commit' do
         let(:scm_webhook) do
           ScmWebhook.new(payload: {
                            scm: 'gitlab',
@@ -425,6 +484,55 @@ RSpec.describe Workflow::Step::LinkPackageStep, vcr: true do
         it_behaves_like 'failed without link permissions'
         it_behaves_like 'insufficient permission on target project'
         it_behaves_like 'insufficient permission to create new target project'
+      end
+    end
+  end
+
+  describe '#validate_source_project_and_package_name' do
+    let(:project) { create(:project, name: 'foo_project', maintainer: user) }
+    let(:package) { create(:package_with_file, name: 'bar_package', project: project) }
+    let(:scm_webhook) do
+      ScmWebhook.new(payload: {
+                       scm: 'github',
+                       event: 'pull_request',
+                       action: 'opened',
+                       pr_number: 1,
+                       source_repository_full_name: 'reponame',
+                       commit_sha: '123',
+                       target_repository_full_name: 'openSUSE/open-build-service'
+                     })
+    end
+
+    context 'when the source project is invalid' do
+      let(:step_instructions) { { source_project: 'Invalid/format', source_package: package.name, target_project: target_project_name } }
+
+      it 'gives an error for invalid name' do
+        subject.valid?
+
+        expect { subject.call }.to change(Package, :count).by(0)
+        expect(subject.errors.full_messages.to_sentence).to eq("invalid source project 'Invalid/format'")
+      end
+    end
+
+    context 'when the source package is invalid' do
+      let(:step_instructions) { { source_project: package.project.name, source_package: 'Invalid/format', target_project: target_project_name } }
+
+      it 'gives an error for invalid name' do
+        subject.valid?
+
+        expect { subject.call }.to change(Package, :count).by(0)
+        expect(subject.errors.full_messages.to_sentence).to eq("invalid source package 'Invalid/format'")
+      end
+    end
+
+    context 'when the target project is invalid' do
+      let(:step_instructions) { { source_project: package.project.name, source_package: package.name, target_project: 'Invalid/format' } }
+
+      it 'gives an error for invalid name' do
+        subject.valid?
+
+        expect { subject.call }.to change(Package, :count).by(0)
+        expect(subject.errors.full_messages.to_sentence).to eq("invalid target project 'Invalid/format'")
       end
     end
   end

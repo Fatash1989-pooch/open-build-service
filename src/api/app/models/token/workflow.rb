@@ -1,4 +1,6 @@
 class Token::Workflow < Token
+  has_many :workflow_runs, dependent: :destroy, foreign_key: 'token_id', inverse_of: false
+
   validates :scm_token, presence: true
 
   def self.token_name
@@ -6,14 +8,24 @@ class Token::Workflow < Token
   end
 
   def call(options)
-    raise ArgumentError, 'A payload is required' if options[:payload].nil?
+    set_triggered_at
+    @scm_webhook = options[:scm_webhook]
 
-    scm_webhook = TriggerControllerService::ScmExtractor.new(options[:scm], options[:event], options[:payload]).call
-    return unless scm_webhook.valid?
+    raise Token::Errors::MissingPayload, 'A payload is required' if @scm_webhook.payload.blank?
 
-    yaml_file = Workflows::YAMLDownloader.new(scm_webhook.payload, token: self).call
-    workflows = Workflows::YAMLToWorkflowsService.new(yaml_file: yaml_file, scm_webhook: scm_webhook, token: self).call
-    workflows.each(&:call)
+    options[:workflow_run].update(response_url: @scm_webhook.payload[:api_endpoint])
+    yaml_file = Workflows::YAMLDownloader.new(@scm_webhook.payload, token: self).call
+    @workflows = Workflows::YAMLToWorkflowsService.new(yaml_file: yaml_file, scm_webhook: @scm_webhook, token: self, workflow_run_id: options[:workflow_run].id).call
+
+    return validation_errors unless validation_errors.none?
+
+    # This is just an initial generic report to give a feedback asap. Initial status pending
+    ScmInitialStatusReporter.new(@scm_webhook.payload, @scm_webhook.payload, scm_token).call
+    @workflows.each(&:call)
+    ScmInitialStatusReporter.new(@scm_webhook.payload, @scm_webhook.payload, scm_token, 'success').call
+
+    # Always returning validation errors to report them back to the SCM in order to help users debug their workflows
+    validation_errors
   rescue Octokit::Unauthorized, Gitlab::Error::Unauthorized => e
     raise Token::Errors::SCMTokenInvalid, e.message
   end
@@ -22,18 +34,35 @@ class Token::Workflow < Token
   def package_find_options
     { use_source: false, follow_project_links: true, follow_multibuild: true }
   end
+
+  private
+
+  def validation_errors
+    @validation_errors ||= begin
+      error_messages = []
+
+      error_messages << @scm_webhook.errors.full_messages unless @scm_webhook.valid?
+      @workflows.each do |workflow|
+        error_messages << workflow.errors.full_messages unless workflow.valid?
+      end
+
+      error_messages.flatten
+    end
+  end
 end
 
 # == Schema Information
 #
 # Table name: tokens
 #
-#  id         :integer          not null, primary key
-#  scm_token  :string(255)      indexed
-#  string     :string(255)      indexed
-#  type       :string(255)
-#  package_id :integer          indexed
-#  user_id    :integer          not null, indexed
+#  id           :integer          not null, primary key
+#  name         :string(64)       default("")
+#  scm_token    :string(255)      indexed
+#  string       :string(255)      indexed
+#  triggered_at :datetime
+#  type         :string(255)
+#  package_id   :integer          indexed
+#  user_id      :integer          not null, indexed
 #
 # Indexes
 #

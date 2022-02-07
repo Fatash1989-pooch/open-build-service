@@ -1,6 +1,8 @@
 class Workflow::Step
   include ActiveModel::Model
 
+  SHORT_COMMIT_SHA_LENGTH = 7
+
   validate :validate_step_instructions
 
   attr_accessor :scm_webhook, :step_instructions, :token
@@ -15,19 +17,24 @@ class Workflow::Step
   end
 
   def target_project_name
-    return step_instructions[:target_project] if scm_webhook.push_event?
+    return target_project_base_name if scm_webhook.push_event? || scm_webhook.tag_push_event?
+
+    return nil unless scm_webhook.pull_request_event?
 
     pr_subproject_name = if scm_webhook.payload[:scm] == 'github'
-                           scm_webhook.payload[:target_repository_full_name].tr('/', ':')
+                           scm_webhook.payload[:target_repository_full_name]&.tr('/', ':')
                          else
-                           scm_webhook.payload[:path_with_namespace].tr('/', ':')
+                           scm_webhook.payload[:path_with_namespace]&.tr('/', ':')
                          end
 
-    "#{step_instructions[:target_project]}:#{pr_subproject_name}:PR-#{scm_webhook.payload[:pr_number]}"
+    "#{target_project_base_name}:#{pr_subproject_name}:PR-#{scm_webhook.payload[:pr_number]}"
   end
 
   def target_package
-    Package.find_by_project_and_name(target_project_name, target_package_name)
+    Package.get_by_project_and_name(target_project_name, target_package_name, follow_multibuild: true)
+  rescue Project::Errors::UnknownObjectError, Package::Errors::UnknownObjectError
+    # We rely on Package.get_by_project_and_name since it's the only way to work with multibuild packages.
+    # It's possible for a package to not exist, so we simply rescue and do nothing. The package will be created later in the step.
   end
 
   def create_or_update_subscriptions(package, workflow_filters)
@@ -40,6 +47,24 @@ class Workflow::Step
                                                           token: @token,
                                                           package: package)
       subscription.update!(payload: scm_webhook.payload.merge({ workflow_filters: workflow_filters }))
+    end
+  end
+
+  def target_package_name(short_commit_sha: false)
+    package_name = step_instructions[:target_package] || source_package_name
+
+    case
+    when scm_webhook.pull_request_event?
+      package_name
+    when scm_webhook.push_event?
+      commit_sha = scm_webhook.payload[:commit_sha]
+      if short_commit_sha
+        "#{package_name}-#{commit_sha.slice(0, SHORT_COMMIT_SHA_LENGTH)}"
+      else
+        "#{package_name}-#{commit_sha}"
+      end
+    when scm_webhook.tag_push_event?
+      "#{package_name}-#{scm_webhook.payload[:tag_name]}"
     end
   end
 
@@ -64,18 +89,19 @@ class Workflow::Step
     step_instructions[:source_project]
   end
 
-  def target_package_name
-    package_name = step_instructions[:target_package] || source_package_name
-
-    case
-    when scm_webhook.pull_request_event?
-      package_name
-    when scm_webhook.push_event?
-      "#{package_name}-#{scm_webhook.payload[:commit_sha]}"
-    end
+  def target_package_names
+    [target_package_name(short_commit_sha: true)] + multibuild_flavors
   end
 
   private
+
+  def multibuild_flavors
+    target_package.multibuild_flavors.collect { |flavor| "#{target_package_name}:#{flavor}" }
+  end
+
+  def target_project_base_name
+    raise AbstractMethodCalled
+  end
 
   def remote_source?
     Project.find_remote_project(source_project_name).present?
@@ -141,10 +167,18 @@ class Workflow::Step
     workflow_repositories(target_project_name, workflow_filters).each do |repository|
       # TODO: Fix n+1 queries
       workflow_architectures(repository, workflow_filters).each do |architecture|
-        # We cannot report multibuild flavors here... so they will be missing from the initial report
-        SCMStatusReporter.new({ project: target_project_name, package: target_package_name, repository: repository.name, arch: architecture.name },
-                              scm_webhook.payload, @token.scm_token).call
+        target_package_names.each do |target_package_name_or_flavor|
+          SCMStatusReporter.new({ project: target_project_name, package: target_package_name_or_flavor, repository: repository.name, arch: architecture.name },
+                                scm_webhook.payload, @token.scm_token).call
+        end
       end
     end
+  end
+
+  # Only used in LinkPackageStep and BranchPackageStep.
+  def validate_source_project_and_package_name
+    errors.add(:base, "invalid source project '#{source_project_name}'") if step_instructions[:source_project] && !Project.valid_name?(source_project_name)
+    errors.add(:base, "invalid source package '#{source_package_name}'") if step_instructions[:source_package] && !Package.valid_name?(source_package_name)
+    errors.add(:base, "invalid target project '#{step_instructions[:target_project]}'") if step_instructions[:target_project] && !Project.valid_name?(step_instructions[:target_project])
   end
 end

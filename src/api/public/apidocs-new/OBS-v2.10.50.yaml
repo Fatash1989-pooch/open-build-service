@@ -4,111 +4,33 @@ servers:
   - url: '/'
 
 tags:
-  - name: General Information
-  - name: Attributes
+  - name: Announcements
   - name: Attribute Namespaces
+  - name: Attributes
   - name: Build
   - name: Configuration
   - name: Distributions
+  - name: General Information
   - name: Groups
   - name: Issue Trackers
+  - name: Notifications
   - name: Person
   - name: Published Binaries
-  - name: Request
-    description: |
-      Please, before using request endpoints, make sure you have read and understood the "Request and Review System" section of
-      the [user guide](https://openbuildservice.org/help/manuals/obs-user-guide/cha.obs.request_and_review_system.html).
-
-      In the next sections you will see how calls to request endpoints could be combined to fullfill different workflows.
-
-      ## Workflow 1: Create a Submit Request from Package A to Package B
-
-      The steps described in this workflow could be easily replicated with this command:
-      `osc createrequest -a submit home:Admin:Origin A home:Admin:Destination B -m "Submit A to B"`
-
-      The logic involved in the creation of a submit request will require to call more endpoints. For the sake of simplicity we suppose, that:
-        - The project `home:Admin:Origin` exists, with a package `A`, and it has a file called `test.txt`.
-        - The latest revision of the package `home:Admin:Origin:A` is `1`.
-        - The project `home:Admin:Destination` doesn't exist.
-        - There aren't any other submit requests previously created with the same source and target.
-
-      To create a submit request, pass the following request body:
-      ```
-      <request>
-        <action type="submit">
-          <source project="home:Admin:Origin" package="A" rev="1"/>
-          <target project="home:Admin:Destination" package="B"/>
-        </action>
-        <state name="new"/>
-        <description>Submit A to B</description>
-      </request>
-      ```
-      ... to this endpoint: `POST /request?cmd=create`
-
-
-      ## Workflow 2: Review a Submit Request
-      **Add a User as Reviewer of a Submit Request**
-
-      First, we make sure that a certain user can review our submit request.
-      We will add the user `test1` as a reviewer of the already created submit request.
-
-      For the sake of simplicity we suppose, that:
-        - There is already a user with login name `test1`.
-        - There is already a submit request with number `33`.
-
-      Adding the user `test1` as a reviewer of the submit request number `33` can be performed with this command:
-      `osc review add -m 'Add user test1 as reviewer' -U test1 33`
-
-      The same action can be done with this API endpoint: `POST /request/33?cmd=addreview&by_user=test1`
-
-      **Mark a Review of a Submit Request as Accepted**
-
-      Now that the user `test1` is a reviewer of the submit request number `33`, this user can review that submit request as `accepted`.
-
-      To review the submit request as `accepted`, issue the following command, using for authentication the login `test1`:
-      `osc review accept -m 'Accept submit request' -U test1 33`
-
-      This can also be done with this API endpoint, using for authentication the login `test1`:
-      `POST /request/33?cmd=changereviewstate&newstate=accepted&by_user=test1`
-
-
-      ## Workflow 3: Approve a Submit Request
-
-      To mark a submit request as approved means that a submit request will be automatically accepted when all the required reviews are accepted.
-
-      For the sake of simplicity let's accept that:
-        - There is already a user with the login name `test1`, which is also a maintainer of the project `home:Admin`.
-        - There is already a submit request with the number `44`.
-        - The user with login name `test1` is a reviewer of the submit request number `44`.
-
-      **Note**: The following commands or endpoints should all be executed as user `test1`.
-
-      **Mark a Submit Request as Approved**
-
-      To mark a request as approved, execute the following command: `osc request approve -m 'Approve submit request' -U test1 44`
-
-      This can also be done with this endpoint (as user `test1`): `POST /request/44?cmd=approve`
-
-      **Review an Already Approved Submit Request as Accepted**
-
-      After adding a review to this submit request with state `accepted`, the submit request will automatically be accepted.
-      This is the same step that has been described previously in the last section *"Review a Submit Request as Accepted"*.
-
-      To perform this operation with `osc`, perform the following command: `osc review accept -m 'Accept submit request' -U test1 44`
-
-      The same can be done with the following endpoint: `POST /request/44?cmd=changereviewstate&newstate=accepted&by_user=test1`
-    externalDocs:
-      url: https://openbuildservice.org/help/manuals/obs-user-guide/cha.obs.request_and_review_system.html
+  - name: Requests
+  - name: Search
+  - name: Sources
+  - name: Sources - Projects
+  - name: Trigger
   - name: Workers
 
 
 info:
   description: |
-    The _Open Build Service API_ is a XML API.
+    The _Open Build Service API_ is an XML API.
 
     To authenticate, use [HTTP basic authentication](https://en.wikipedia.org/wiki/Basic_access_authentication) by passing the _Authorization_ header in the form of `Authorization: Basic <credentials>`.
 
-    There is no API versioning as there is no need for it right now.
+    There is no API versioning, since there is no need for it right now.
 
     Only rudimentary rate limiting is implemented, so please be gentle when using the API concurrently, especially with potentially expensive operations.
     In case of abuse, we will limit/remove your access.
@@ -127,6 +49,11 @@ info:
 paths:
   /about:
     $ref: 'paths/about.yaml'
+
+  /announcements:
+    $ref: 'paths/announcements.yaml'
+  /announcements/{announcement_id}:
+    $ref: 'paths/announcements_announcement_id.yaml'
 
   /architectures:
     $ref: 'paths/architectures.yaml'
@@ -202,6 +129,11 @@ paths:
   /issue_trackers/{issue_tracker_name}/issues/{issue_name}:
     $ref: 'paths/issue_trackers_issue_tracker_name_issues_issue_name.yaml'
 
+  /my/notifications:
+    $ref: 'paths/my_notifications.yaml'
+  /my/notifications/{id}:
+    $ref: 'paths/my_notifications_id.yaml'
+
   /person:
     $ref: 'paths/person.yaml'
   /person/register:
@@ -239,6 +171,71 @@ paths:
   /request/{id}?cmd=diff:
     $ref: 'paths/request_id_cmd_diff.yaml'
 
+  /search:
+    $ref: 'paths/search.yaml'
+  /search/missing_owner:
+    $ref: 'paths/search_missing_owner.yaml'
+  /search/owner:
+    $ref: 'paths/search_owner.yaml'
+  /search/project/id:
+    $ref: 'paths/search_project_id.yaml'
+  /search/published/binary/id:
+    $ref: 'paths/search_published_binary_id.yaml'
+  /search/published/pattern/id:
+    $ref: 'paths/search_published_pattern_id.yaml'
+  /search/published/repoinfo/id:
+    $ref: 'paths/search_published_repoinfo_id.yaml'
+
+  /service:
+    $ref: 'paths/service.yaml'
+
+  # Sources
+
+  /source?cmd=branch:
+    $ref: 'paths/source_branch.yaml'
+  /source?cmd=createmaintenanceincident:
+    $ref: 'paths/source_createmaintenanceincident.yaml'
+  /source?cmd=orderkiwirepos:
+    $ref: 'paths/source_orderkiwirepos.yaml'
+
+  # Sources - Projects
+
+  /source/{project_name}?cmd=addchannels:
+    $ref: 'paths/source_project_name_cmd_addchannels.yaml'
+  /source/{project_name}?cmd=copy:
+    $ref: 'paths/source_project_name_cmd_copy.yaml'
+  /source/{project_name}?cmd=createkey:
+    $ref: 'paths/source_project_name_cmd_createkey.yaml'
+  /source/{project_name}?cmd=createmaintenanceincident:
+    $ref: 'paths/source_project_name_cmd_createmaintenanceincident.yaml'
+  /source/{project_name}?cmd=createpatchinfo:
+    $ref: 'paths/source_project_name_cmd_createpatchinfo.yaml'
+  /source/{project_name}?cmd=extendkey:
+    $ref: 'paths/source_project_name_cmd_extendkey.yaml'
+  /source/{project_name}?cmd=freezelink:
+    $ref: 'paths/source_project_name_cmd_freezelink.yaml'
+  /source/{project_name}?cmd=lock:
+    $ref: 'paths/source_project_name_cmd_lock.yaml'
+  /source/{project_name}?cmd=modifychannels:
+    $ref: 'paths/source_project_name_cmd_modifychannels.yaml'
+  /source/{project_name}?cmd=move:
+    $ref: 'paths/source_project_name_cmd_move.yaml'
+  /source/{project_name}?cmd=release:
+    $ref: 'paths/source_project_name_cmd_release.yaml'
+  /source/{project_name}?cmd=remove_flag:
+    $ref: 'paths/source_project_name_cmd_remove_flag.yaml'
+  /source/{project_name}?cmd=set_flag:
+    $ref: 'paths/source_project_name_cmd_set_flag.yaml'
+  /source/{project_name}?cmd=showlinked:
+    $ref: 'paths/source_project_name_cmd_showlinked.yaml'
+  /source/{project_name}?cmd=undelete:
+    $ref: 'paths/source_project_name_cmd_undelete.yaml'
+  /source/{project_name}?cmd=unlock:
+    $ref: 'paths/source_project_name_cmd_unlock.yaml'
+
+  /trigger/{operation}:
+    $ref: 'paths/trigger_operation.yaml'
+
   /worker/status:
     $ref: 'paths/worker_status.yaml'
   /worker/{architecture_name}:{worker_id}:
@@ -251,6 +248,10 @@ components:
     basic_authentication:
       type: http
       scheme: basic
+    GitLab_key_authentication:
+      type: apiKey
+      in: header
+      name: X-GitLab-Token
 
 externalDocs:
   url: 'https://openbuildservice.org/help/'

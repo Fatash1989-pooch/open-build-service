@@ -533,6 +533,7 @@ class SourceController < ApplicationController
     raise CmdExecutionNoPermission, "no permission to execute command 'undelete'" unless User.session!.can_create_project?(params[:project])
 
     Project.restore(params[:project])
+    render_ok
   end
 
   # POST /source/<project>?cmd=release
@@ -1055,7 +1056,7 @@ class SourceController < ApplicationController
     path += build_query_from_hash(params, [:cmd, :comment, :user])
     pass_to_backend(path)
 
-    @package.sources_changed
+    @package.sources_changed unless params[:package] == '_project'
   end
 
   # POST /source/<project>/<package>?cmd=deleteuploadrev

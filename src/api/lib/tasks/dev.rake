@@ -3,7 +3,7 @@
 require 'fileutils'
 require 'yaml'
 
-ENABLED_FEATURE_FLAGS = [:notifications_redesign, :user_profile_redesign, :trigger_workflow].freeze
+ENABLED_FEATURE_FLAGS = [:notifications_redesign, :trigger_workflow].freeze
 
 namespace :dev do
   task :prepare do
@@ -12,9 +12,7 @@ namespace :dev do
     database_yml = YAML.load_file('config/database.yml') || {}
     database_yml['test']['host'] = 'db'
     database_yml['development']['host'] = 'db'
-    File.open('config/database.yml', 'w') do |f|
-      f.write(YAML.dump(database_yml))
-    end
+    File.write('config/database.yml', YAML.dump(database_yml))
 
     puts 'Setting up the application configuration...'
     copy_example_file('config/options.yml')
@@ -68,7 +66,7 @@ namespace :dev do
 
   desc 'Run all linters we use'
   task :lint do
-    Rake::Task['haml_lint'].invoke
+    Rake::Task['dev:lint:haml'].invoke
     Rake::Task['dev:lint:rubocop:all'].invoke
     sh 'jshint ./app/assets/javascripts/'
   end
@@ -121,7 +119,11 @@ namespace :dev do
     end
     desc 'Run the haml linter'
     task :haml do
-      Rake::Task['haml_lint'].invoke
+      Rake::Task['haml_lint'].invoke('--parallel')
+    end
+    desc 'Run apidocs linter'
+    task :apidocs do
+      sh 'find public/apidocs-new -name  \'*.yaml\' | xargs -P8 -I % ruby -e "require \'yaml\'; YAML.load_file \'%\'"'
     end
   end
 
@@ -141,9 +143,7 @@ namespace :dev do
       options_yml['development']['amqp_options'] = { host: 'rabbit', port: '5672', user: 'guest', pass: 'guest', vhost: '/' }
       options_yml['development']['amqp_exchange_name'] = 'pubsub'
       options_yml['development']['amqp_exchange_options'] = { type: :topic, persistent: 'true', passive: 'true' }
-      File.open('config/options.yml', 'w') do |f|
-        f.write(YAML.dump(options_yml))
-      end
+      File.write('config/options.yml', YAML.dump(options_yml))
     end
   end
 
@@ -193,6 +193,7 @@ namespace :dev do
 
       # Users
       admin = User.where(login: 'Admin').first || create(:admin_user, login: 'Admin')
+      group = create(:groups_user, user: admin, group: create(:group, title: Faker::Creature::Cat.name)).group
       subscribe_to_all_notifications(admin)
       requestor = User.where(login: 'Requestor').first || create(:confirmed_user, login: 'Requestor')
       User.session = requestor
@@ -216,8 +217,11 @@ namespace :dev do
           source_package: requestor_package
         )
 
-        # Will create a notification (ReviewWanted event) for this review.
+        # Will create notifications (ReviewWanted event) for those reviews.
+        # The creation and these two reviews are finally displayed as
+        # one single notification in the UI.
         request.addreview(by_user: admin, comment: Faker::Lorem.paragraph)
+        request.addreview(by_group: group, comment: Faker::Lorem.paragraph)
 
         # Will create a notification (CommentForRequest event) for this comment.
         create(:comment_request, commentable: request, user: requestor)
@@ -441,4 +445,14 @@ def subscribe_to_all_notifications(user)
   create(:event_subscription_comment_for_project, channel: :web, user: user, receiver_role: 'maintainer')
   create(:event_subscription_comment_for_package, channel: :web, user: user, receiver_role: 'maintainer')
   create(:event_subscription_comment_for_request, channel: :web, user: user, receiver_role: 'target_maintainer')
+
+  user.groups.each do |group|
+    create(:event_subscription_request_created, channel: :web, user: nil, group: group, receiver_role: 'target_maintainer')
+    create(:event_subscription_review_wanted, channel: 'web', user: nil, group: group, receiver_role: 'reviewer')
+    create(:event_subscription_request_statechange, channel: :web, user: nil, group: group, receiver_role: 'target_maintainer')
+    create(:event_subscription_request_statechange, channel: :web, user: nil, group: group, receiver_role: 'source_maintainer')
+    create(:event_subscription_comment_for_project, channel: :web, user: nil, group: group, receiver_role: 'maintainer')
+    create(:event_subscription_comment_for_package, channel: :web, user: nil, group: group, receiver_role: 'maintainer')
+    create(:event_subscription_comment_for_request, channel: :web, user: nil, group: group, receiver_role: 'target_maintainer')
+  end
 end

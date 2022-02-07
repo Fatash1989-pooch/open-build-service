@@ -3332,13 +3332,8 @@ sub dobuild {
 
 
   my $bconf = Build::read_config($buildinfo->{'arch'}, "$buildroot/.build.config");
-  my $useccache = 0;
-  if (exists $bconf->{'buildflags:useccache'}) {
-      my $opackid = $buildinfo->{'releasename'} || $packid;
-      if (grep {$_ eq "useccache:$opackid" || $_ eq "useccache:$packid"} @{$bconf->{'buildflags'} || []}) {
-        $useccache = 1;
-    }
-  }
+  my $useccache = $buildinfo->{'ccache'} ? 1 : 0;
+  my $ccachetype = $useccache ? $buildinfo->{'ccache'} : undef;
 
   if ($buildinfo->{'modularity_meta'}) {
     getmodulemddata($buildinfo, $srcdir, $bconf);
@@ -3483,7 +3478,7 @@ sub dobuild {
   push @args, '--clean';
   push @args, '--changelog';
   push @args, '--oldpackages', $oldpkgdir if $oldpkgdir && -d $oldpkgdir;
-  push @args, '--norootforbuild' unless $buildinfo->{'rootforbuild'} || ($BSConfig::norootexceptions && grep {"$projid/$packid" =~ /^$_$/} keys %$BSConfig::norootexceptions);
+  push @args, '--norootforbuild' unless !$BSConfig::norootexceptions || $bconf->{'buildflags:allowrootforbuild'} || $buildinfo->{'rootforbuild'} || grep {"$projid/$packid" =~ /^$_$/} keys %$BSConfig::norootexceptions;
   push @args, '--baselibs-internal';
   push @args, '--dist', "$buildroot/.build.config";
   push @args, '--rpmlist', "$buildroot/.build.rpmlist";
@@ -3493,6 +3488,8 @@ sub dobuild {
   push @args, '--arch', $arch;
   push @args, '--jobs', $jobs if $jobs;
   push @args, '--ccache' if $useccache && $oldpkgdir;
+  push @args, '--ccache-create-archive' if $useccache && $oldpkgdir;
+  push @args, "--ccache-type=$ccachetype" if $useccache && $oldpkgdir && $ccachetype;
   push @args, '--threads', $threads if $threads;
   push @args, '--reason', "Building $packid for project '$projid' repository '$repoid' arch '$arch' srcmd5 '$buildinfo->{'srcmd5'}'";
   push @args, '--disturl', $disturl;
@@ -4261,7 +4258,7 @@ if ($ex == 0) {
   my @d;
   push @d, map {"RPMS/$_"} sort(ls("$buildroot/.build.packages/RPMS"));
   push @d, 'SRPMS';
-  @d = ('DEBS') if $buildinfo->{'file'} =~ /(?:\.dsc|build\.collax)$/;
+  @d = ('DEBS') if $buildinfo->{'file'} =~ /(?:\.dsc|build\.collax|debian\.control)$/;
   if (-d "$buildroot/.build.packages/SDEBS") {
     @d = map {"DEBS/$_"} sort(ls("$buildroot/.build.packages/DEBS"));	# assume debbuild
     push @d, 'SDEBS';

@@ -10,15 +10,16 @@
         - else
           There are no notifications, but there's a world of opportunities!
 - else
-  - update_path = my_notifications_path(type: selected_filter[:type], project: selected_filter[:project],
-                                       page: params[:page], show_all: params[:show_all])
+  :ruby
+    update_path = my_notifications_path(type: selected_filter[:type], project: selected_filter[:project], group: selected_filter[:group],
+                                        page: params[:page], show_more: params[:show_more])
   = form_tag(update_path, method: :put, remote: true) do
-    = render partial: 'notification_action_bar', locals: { type: selected_filter[:type] }
+    = render(NotificationActionBarComponent.new(type: selected_filter[:type], update_path: update_path, show_read_all_button: show_read_all_button))
     .card
       .card-body
         .text-center
           %span.ml-3= page_entries_info notifications, entry_name: ''
-          = link_to_all unless notifications.total_pages == 1 && params['show_all'].nil?
+          = link_to_show_less_or_more unless notifications.total_pages == 1 && params[:show_more].nil?
         .list-group.list-group-flush.mt-3
           - notifications.each do |n|
             - notification = NotificationPresenter.new(n)
@@ -29,7 +30,7 @@
                     = check_box_tag('notification_ids[]', notification.id, false,
                                     id: "notification_ids_#{notification.id}", class: 'custom-control-input')
                     = label_tag("notification_ids_#{notification.id}", '', class: 'custom-control-label')
-                .col
+                .col-10
                   .row
                     .col
                       - if notification.notifiable_type == 'BsRequest'
@@ -46,8 +47,8 @@
                       :ruby
                         title, icon = notification.unread? ? ['Mark as "Read"', 'fa-check'] : ['Mark as "Unread"', 'fa-undo']
                         update_path = my_notifications_path(notification_ids: [notification.id], type: selected_filter[:type],
-                                                            project: selected_filter[:project], page: params[:page],
-                                                            show_all: params[:show_all])
+                                                            project: selected_filter[:project], group: selected_filter[:group],
+                                                            page: params[:page], show_more: params[:show_more])
                       = link_to(update_path, id: format('update-notification-%d', notification.id),
                                 method: :put, class: 'btn btn-sm btn-outline-success px-3', title: title,
                                 data: { remote: true, 'disable-with': tag.i(class: 'fas fa-spinner fa-spin') }) do
@@ -56,7 +57,7 @@
                     .col-auto.pr-0
                       = render partial: 'notification_avatars', locals: { avatar_objects: notification.avatar_objects }
                     .col-auto.pl-xs-2
-                      %span.text-word-break-all= action_description(notification)
+                      .smart-overflow= action_description(notification)
                   .row.d-none.d-md-block.pl-4
                     .col
                       %p.mt-3.mb-0= notification.excerpt
@@ -64,3 +65,5 @@
 
 - content_for :ready_function do
   handleNotificationCheckboxSelection();
+  applySmartOverflow();
+  window.onresize = applySmartOverflow;

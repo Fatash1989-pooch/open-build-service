@@ -21,7 +21,6 @@ class User < ApplicationRecord
 
   has_many :comments, dependent: :destroy, inverse_of: :user
   has_many :status_messages
-  has_many :messages
   has_many :tokens, class_name: 'Token', dependent: :destroy, inverse_of: :user
   has_one :rss_token, class_name: 'Token::Rss', dependent: :destroy
 
@@ -29,7 +28,7 @@ class User < ApplicationRecord
 
   has_many :event_subscriptions, inverse_of: :user
 
-  belongs_to :owner, class_name: 'User'
+  belongs_to :owner, class_name: 'User', optional: true
   has_many :subaccounts, class_name: 'User', foreign_key: 'owner_id'
 
   has_many :requests_created, foreign_key: 'creator', primary_key: :login, class_name: 'BsRequest'

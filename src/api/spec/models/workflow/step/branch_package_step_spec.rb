@@ -4,6 +4,8 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
   let!(:user) { create(:confirmed_user, :with_home, login: 'Iggy') }
   let(:token) { create(:workflow_token, user: user) }
   let(:target_project_name) { "home:#{user.login}" }
+  let(:long_commit_sha) { '123456789' }
+  let(:short_commit_sha) { '1234567' }
 
   subject do
     described_class.new(step_instructions: step_instructions,
@@ -77,25 +79,6 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
     it { expect(subject.call.source_file('_branch_request')).to include('123') }
     it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count).by(1)) }
     it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count).by(1)) }
-
-    # rubocop:disable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/MessageSpies
-    # RSpec/MultipleExpectations, RSpec/ExampleLength - We want to test those expectations together since they depend on each other to be true
-    # RSpec/MesssageSpies - The method `and_call_original` isn't available on `have_received`, so we need to use `receive`
-    it 'only reports for repositories and architectures matching the filters' do
-      expect(SCMStatusReporter).to receive(:new).with({ project: target_project_final_name, package: final_package_name, repository: 'Unicorn_123', arch: 'i586' },
-                                                      scm_webhook.payload, token.scm_token).and_call_original
-      expect(SCMStatusReporter).to receive(:new).with({ project: target_project_final_name, package: final_package_name, repository: 'Unicorn_123', arch: 'x86_64' },
-                                                      scm_webhook.payload, token.scm_token).and_call_original
-
-      expect(SCMStatusReporter).not_to receive(:new).with({ project: target_project_final_name, package: final_package_name, repository: 'Unicorn_123', arch: 'ppc' },
-                                                          scm_webhook.payload, token.scm_token)
-      expect(SCMStatusReporter).not_to receive(:new).with({ project: target_project_final_name, package: final_package_name, repository: 'Unicorn_123', arch: 'aarch64' },
-                                                          scm_webhook.payload, token.scm_token)
-      expect(SCMStatusReporter).not_to receive(:new).with({ project: target_project_final_name, package: final_package_name, repository: 'openSUSE_Tumbleweed', arch: 'x86_64' },
-                                                          scm_webhook.payload, token.scm_token)
-      subject.call({ workflow_filters: workflow_filters })
-    end
-    # rubocop:enable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/MessageSpies
   end
 
   RSpec.shared_context 'successful update event when the branch_package already exists' do
@@ -179,7 +162,6 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
     end
 
     context 'when the SCM is GitHub' do
-      let(:commit_sha) { '123' }
       let(:scm_webhook) do
         ScmWebhook.new(payload: {
                          scm: 'github',
@@ -187,7 +169,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
                          action: action,
                          pr_number: 1,
                          source_repository_full_name: 'reponame',
-                         commit_sha: commit_sha,
+                         commit_sha: long_commit_sha,
                          target_repository_full_name: 'openSUSE/open-build-service'
                        })
       end
@@ -219,19 +201,50 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
         it_behaves_like 'fails with insufficient write permission on target project'
       end
 
+      context 'for a multibuild package' do
+        let(:action) { 'opened' }
+        let(:package) { create(:multibuild_package, name: 'multibuild_package', project: project) }
+        let(:octokit_client) { instance_double(Octokit::Client) }
+        let(:step_instructions) do
+          {
+            source_project: package.project.name,
+            source_package: package.name,
+            target_project: target_project_name
+          }
+        end
+        let(:workflow_filters) do
+          { architectures: { only: ['x86_64', 'i586'] }, repositories: { ignore: ['openSUSE_Tumbleweed'] } }
+        end
+
+        before do
+          allow(Octokit::Client).to receive(:new).and_return(octokit_client)
+          allow(octokit_client).to receive(:create_status).and_return(true)
+
+          create(:repository, name: 'Unicorn_123', project: package.project, architectures: ['x86_64', 'i586', 'ppc', 'aarch64'])
+          create(:repository, name: 'openSUSE_Tumbleweed', project: package.project, architectures: ['x86_64'])
+        end
+
+        it { expect { subject.call }.to(change(Package, :count).by(1)) }
+        it { expect(subject.call.project.name).to eq(target_project_final_name) }
+        it { expect { subject.call.source_file('_branch_request') }.not_to raise_error }
+        it { expect(subject.call.source_file('_branch_request')).to include('123') }
+        it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count).by(1)) }
+        it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count).by(1)) }
+      end
+
       context 'for an updated PR event' do
         context 'when the branched package already existed' do
           it_behaves_like 'successful update event when the branch_package already exists' do
             let(:action) { 'synchronize' }
             let(:creation_payload) do
-              { 'action' => 'opened', 'commit_sha' => '456', 'event' => 'pull_request', 'pr_number' => 1, 'scm' => 'github', 'source_repository_full_name' => 'reponame',
+              { 'action' => 'opened', 'commit_sha' => long_commit_sha, 'event' => 'pull_request', 'pr_number' => 1, 'scm' => 'github', 'source_repository_full_name' => 'reponame',
                 'target_repository_full_name' => 'openSUSE/open-build-service' }
             end
             let(:update_payload) do
-              { 'action' => 'synchronize', 'commit_sha' => '456', 'event' => 'pull_request', 'pr_number' => 1, 'scm' => 'github', 'source_repository_full_name' => 'reponame',
+              { 'action' => 'synchronize', 'commit_sha' => long_commit_sha, 'event' => 'pull_request', 'pr_number' => 1,
+                'scm' => 'github', 'source_repository_full_name' => 'reponame',
                 'target_repository_full_name' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
             end
-            let(:commit_sha) { '456' }
             let(:existing_branch_request_file) do
               {
                 action: 'synchronize',
@@ -253,21 +266,22 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
         end
       end
 
-      context 'for a push event' do
+      context 'with a push event for a commit' do
         let(:scm_webhook) do
           ScmWebhook.new(payload: {
                            scm: 'github',
                            event: 'push',
                            target_branch: 'main',
                            source_repository_full_name: 'reponame',
-                           commit_sha: commit_sha,
-                           target_repository_full_name: 'openSUSE/open-build-service'
+                           commit_sha: long_commit_sha,
+                           target_repository_full_name: 'openSUSE/open-build-service',
+                           ref: 'refs/heads/branch_123'
                          })
         end
 
         let(:octokit_client) { instance_double(Octokit::Client) }
         let(:target_project_final_name) { "home:#{user.login}" }
-        let(:final_package_name) { "#{package.name}-#{commit_sha}" }
+        let(:final_package_name) { "#{package.name}-#{short_commit_sha}" }
 
         before do
           # branching a package to an existing project doesn't take over the set repositories
@@ -283,10 +297,60 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
         it_behaves_like 'failed without branch permissions'
         it_behaves_like 'fails with insufficient write permission on target project'
       end
+
+      context 'with a push event for a tag' do
+        let(:scm_webhook) do
+          ScmWebhook.new(payload: {
+                           scm: 'github',
+                           event: 'push',
+                           target_branch: 'main',
+                           source_repository_full_name: 'openSUSE/open-build-service',
+                           tag_name: 'release_abc',
+                           commit_sha: '123456789012345',
+                           target_repository_full_name: 'openSUSE/open-build-service',
+                           ref: 'refs/tags/release_abc'
+                         })
+        end
+        let(:octokit_client) { instance_double(Octokit::Client) }
+        let(:target_project_final_name) { "home:#{user.login}" }
+        let(:final_package_name) { "#{package.name}-release_abc" }
+        let(:step_instructions) do
+          {
+            source_project: package.project.name,
+            source_package: package.name,
+            target_project: target_project_name
+          }
+        end
+
+        before do
+          # branching a package to an existing project doesn't take over the set repositories
+          create(:repository, name: 'Unicorn_123', project: user.home_project, architectures: ['x86_64', 'i586', 'ppc', 'aarch64'])
+          create(:repository, name: 'openSUSE_Tumbleweed', project: user.home_project, architectures: ['x86_64'])
+
+          allow(Octokit::Client).to receive(:new).and_return(octokit_client)
+          allow(octokit_client).to receive(:create_status).and_return(true)
+        end
+
+        it { expect { subject.call }.to(change(Package, :count).by(1)) }
+        it { expect(subject.call.project.name).to eq(target_project_final_name) }
+        it { expect { subject.call.source_file('_branch_request') }.not_to raise_error }
+        it { expect(subject.call.source_file('_branch_request')).to include('123456789012345') }
+        it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count)) }
+        it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count)) }
+
+        it 'does not report back to the SCM' do
+          allow(SCMStatusReporter).to receive(:new)
+          subject.call
+          expect(SCMStatusReporter).not_to have_received(:new)
+        end
+
+        it_behaves_like 'failed when source_package does not exist'
+        it_behaves_like 'failed without branch permissions'
+        it_behaves_like 'fails with insufficient write permission on target project'
+      end
     end
 
     context 'when the SCM is GitLab' do
-      let(:commit_sha) { '123' }
       let(:scm_webhook) do
         ScmWebhook.new(payload: {
                          scm: 'gitlab',
@@ -294,7 +358,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
                          action: action,
                          pr_number: 1,
                          source_repository_full_name: 'reponame',
-                         commit_sha: commit_sha,
+                         commit_sha: long_commit_sha,
                          path_with_namespace: 'openSUSE/open-build-service'
                        })
       end
@@ -331,14 +395,15 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
           it_behaves_like 'successful update event when the branch_package already exists' do
             let(:action) { 'update' }
             let(:creation_payload) do
-              { 'action' => 'open', 'commit_sha' => '456', 'event' => 'Merge Request Hook', 'pr_number' => 1, 'scm' => 'gitlab', 'source_repository_full_name' => 'reponame',
+              { 'action' => 'open', 'commit_sha' => long_commit_sha, 'event' => 'Merge Request Hook',
+                'pr_number' => 1, 'scm' => 'gitlab', 'source_repository_full_name' => 'reponame',
                 'path_with_namespace' => 'openSUSE/open-build-service' }
             end
             let(:update_payload) do
-              { 'action' => 'update', 'commit_sha' => '456', 'event' => 'Merge Request Hook', 'pr_number' => 1, 'scm' => 'gitlab', 'source_repository_full_name' => 'reponame',
+              { 'action' => 'update', 'commit_sha' => long_commit_sha, 'event' => 'Merge Request Hook',
+                'pr_number' => 1, 'scm' => 'gitlab', 'source_repository_full_name' => 'reponame',
                 'path_with_namespace' => 'openSUSE/open-build-service', 'workflow_filters' => {} }
             end
-            let(:commit_sha) { '456' }
             let(:existing_branch_request_file) do
               { object_kind: 'update',
                 project: { http_url: 'http_url' },
@@ -354,21 +419,21 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
         end
       end
 
-      context 'for a push event' do
+      context 'with a push event for a commit' do
         let(:scm_webhook) do
           ScmWebhook.new(payload: {
                            scm: 'gitlab',
                            event: 'Push Hook',
                            target_branch: 'main',
                            source_repository_full_name: 'reponame',
-                           commit_sha: commit_sha,
+                           commit_sha: long_commit_sha,
                            path_with_namespace: 'openSUSE/open-build-service'
                          })
         end
 
         let(:gitlab_client) { instance_double(Gitlab::Client) }
         let(:target_project_final_name) { "home:#{user.login}" }
-        let(:final_package_name) { "#{package.name}-#{commit_sha}" }
+        let(:final_package_name) { "#{package.name}-#{short_commit_sha}" }
 
         before do
           # branching a package to an existing project doesn't take over the set repositories
@@ -383,6 +448,44 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
         it_behaves_like 'failed when source_package does not exist'
         it_behaves_like 'failed without branch permissions'
         it_behaves_like 'fails with insufficient write permission on target project'
+      end
+    end
+  end
+
+  describe '#validate_source_project_and_package_name' do
+    let(:project) { create(:project, name: 'foo_project', maintainer: user) }
+    let(:package) { create(:package_with_file, name: 'bar_package', project: project) }
+    let(:scm_webhook) do
+      ScmWebhook.new(payload: {
+                       scm: 'github',
+                       event: 'pull_request',
+                       action: 'opened',
+                       pr_number: 1,
+                       source_repository_full_name: 'reponame',
+                       commit_sha: long_commit_sha,
+                       target_repository_full_name: 'openSUSE/open-build-service'
+                     })
+    end
+
+    context 'when the source project is invalid' do
+      let(:step_instructions) { { source_project: 'Invalid/format', source_package: package.name, target_project: target_project_name } }
+
+      it 'gives an error for invalid name' do
+        subject.valid?
+
+        expect { subject.call }.to change(Package, :count).by(0)
+        expect(subject.errors.full_messages.to_sentence).to eq("invalid source project 'Invalid/format'")
+      end
+    end
+
+    context 'when the source package is invalid' do
+      let(:step_instructions) { { source_project: package.project.name, source_package: 'Invalid/format', target_project: target_project_name } }
+
+      it 'gives an error for invalid name' do
+        subject.valid?
+
+        expect { subject.call }.to change(Package, :count).by(0)
+        expect(subject.errors.full_messages.to_sentence).to eq("invalid source package 'Invalid/format'")
       end
     end
   end

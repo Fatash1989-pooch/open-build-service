@@ -35,8 +35,6 @@ class Repository < ApplicationRecord
   validates :name, uniqueness: { scope: [:db_project_id, :remote_project_name],
                                  case_sensitive: true,
                                  message: '%{value} is already used by a repository of this project' }
-
-  validates :project, presence: true
   # NOTE: remote_project_name cannot be NULL because mysql UNIQUE KEY constraint does considers
   #       two NULL's to be distinct. (See mysql bug #8173)
   validate :remote_project_name_not_nill
@@ -153,7 +151,12 @@ class Repository < ApplicationRecord
   def cycles(arch)
     # skip all packages via package=- to speed up the api call, we only parse the cycles anyway
     deps = Backend::Api::BuildResults::Binaries.builddepinfo(project.name, name, arch, '-')
-    cycles = Xmlhash.parse(deps).elements('cycle').map! { |cycle| cycle.elements('package') }
+    deps = Xmlhash.parse(deps)
+    # if the backend has support for SCC calculation, we don't need to merge "cycles". The cycles
+    # are incomplete anyway
+    return deps.elements('scc').map! { |cycle| cycle.elements('package') } if deps.value('scc')
+
+    cycles = deps.elements('cycle').map! { |cycle| cycle.elements('package') }
 
     merged_cycles = []
     cycles.each do |cycle|

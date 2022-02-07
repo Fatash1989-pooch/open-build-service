@@ -2,15 +2,14 @@ class Workflow
   include ActiveModel::Model
 
   SUPPORTED_STEPS = {
-    branch_package: Workflow::Step::BranchPackageStep,
-    link_package: Workflow::Step::LinkPackageStep,
-    configure_repositories: Workflow::Step::ConfigureRepositories,
-    rebuild_package: Workflow::Step::RebuildPackage
+    branch_package: Workflow::Step::BranchPackageStep, link_package: Workflow::Step::LinkPackageStep,
+    configure_repositories: Workflow::Step::ConfigureRepositories, rebuild_package: Workflow::Step::RebuildPackage,
+    set_flags: Workflow::Step::SetFlags
   }.freeze
 
   SUPPORTED_FILTERS = [:architectures, :branches, :event, :repositories].freeze
 
-  attr_accessor :workflow_instructions, :scm_webhook, :token
+  attr_accessor :workflow_instructions, :scm_webhook, :token, :workflow_run_id
 
   def initialize(attributes = {})
     super
@@ -21,9 +20,7 @@ class Workflow
   validates_with WorkflowFiltersValidator
 
   def call
-    # TODO: This could be in a custom validator WorkflowEventFilterValidator
     return unless event_matches_event_filter?
-    # TODO: This could be in a custom validator WorkflowBranchesFilterValidator
     return unless branch_matches_branches_filter?
 
     case
@@ -31,11 +28,16 @@ class Workflow
       destroy_target_projects
     when scm_webhook.reopened_pull_request?
       restore_target_projects
-    when scm_webhook.new_pull_request?, scm_webhook.updated_pull_request?, scm_webhook.push_event?
+    when scm_webhook.new_pull_request?, scm_webhook.updated_pull_request?, scm_webhook.push_event?, scm_webhook.tag_push_event?
       steps.each do |step|
-        step.call({ workflow_filters: filters })
+        call_step_and_collect_artifacts(step)
       end
     end
+  end
+
+  # ArtifactsCollector can only be called if the step.call doesn't return nil because of a validation error
+  def call_step_and_collect_artifacts(step)
+    step.call({ workflow_filters: filters }) && Workflows::ArtifactsCollector.new(step: step, workflow_run_id: workflow_run_id).call
   end
 
   def steps
@@ -76,10 +78,17 @@ class Workflow
 
   def event_matches_event_filter?
     return true unless supported_filters.key?(:event)
-    return true if filters[:event] == 'push' && scm_webhook.push_event?
-    return true if filters[:event] == 'pull_request' && scm_webhook.pull_request_event?
 
-    false
+    case filters[:event]
+    when 'push'
+      scm_webhook.push_event?
+    when 'tag_push'
+      scm_webhook.tag_push_event?
+    when 'pull_request'
+      scm_webhook.pull_request_event?
+    else
+      false
+    end
   end
 
   def branch_matches_branches_filter?

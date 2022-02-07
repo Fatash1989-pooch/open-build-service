@@ -1,11 +1,12 @@
 require 'rails_helper'
 
-RSpec.describe Workflow, type: :model do
+RSpec.describe Workflow, type: :model, vcr: true do
   let(:user) { create(:confirmed_user, :with_home, login: 'cameron') }
-  let!(:token) { create(:workflow_token, user: user) }
+  let(:token) { create(:workflow_token, user: user) }
+  let!(:workflow_run) { create(:workflow_run, token: token) }
 
   subject do
-    described_class.new(workflow_instructions: yaml, scm_webhook: ScmWebhook.new(payload: extractor_payload), token: token)
+    described_class.new(workflow_instructions: yaml, scm_webhook: ScmWebhook.new(payload: extractor_payload), token: token, workflow_run_id: workflow_run.id)
   end
 
   describe '#call' do
@@ -84,7 +85,23 @@ RSpec.describe Workflow, type: :model do
       let(:extractor_payload) do
         {
           scm: 'github',
-          event: 'push'
+          event: 'push',
+          ref: 'refs/heads/branch_123'
+        }
+      end
+
+      it 'does not run' do
+        expect(subject.call).to be_nil
+      end
+    end
+
+    context 'with GitHub "push" event not matching the "tag_push" event filter' do
+      let(:yaml) { { filters: { event: 'tag_push' } } }
+      let(:extractor_payload) do
+        {
+          scm: 'github',
+          event: 'push',
+          ref: 'refs/heads/branch_123'
         }
       end
 
@@ -118,6 +135,66 @@ RSpec.describe Workflow, type: :model do
 
       it 'does not run' do
         expect(subject.call).to be_nil
+      end
+    end
+
+    context 'with GitLab "Push Hook" event not matching the "tag_push" event filter' do
+      let(:yaml) { { filters: { event: 'tag_push' } } }
+      let(:extractor_payload) do
+        {
+          scm: 'gitlab',
+          event: 'Push Hook'
+        }
+      end
+
+      it 'does not run' do
+        expect(subject.call).to be_nil
+      end
+    end
+
+    context 'with GitHub "push" event for a tag' do
+      let(:yaml) do
+        { 'steps' => [{ 'branch_package' => { 'source_project' => 'test-project', 'source_package' => 'test-package' } }] }
+      end
+      let(:extractor_payload) do
+        {
+          scm: 'github',
+          event: 'push',
+          ref: 'refs/tags/release_abc',
+          target_branch: 'master'
+        }
+      end
+
+      before do
+        allow(subject.steps.first).to receive(:call)
+      end
+
+      it 'the workflow runs' do
+        subject.call
+        expect(subject.steps.first).to have_received(:call)
+      end
+    end
+
+    context 'with GitLab "Tag Push Hook" event' do
+      let(:yaml) do
+        { 'steps' => [{ 'branch_package' => { 'source_project' => 'test-project', 'source_package' => 'test-package' } }] }
+      end
+      let(:extractor_payload) do
+        {
+          scm: 'gitlab',
+          event: 'Tag Push Hook',
+          ref: 'refs/tags/release_abc',
+          target_branch: 'master'
+        }
+      end
+
+      before do
+        allow(subject.steps.first).to receive(:call)
+      end
+
+      it 'the workflow runs' do
+        subject.call
+        expect(subject.steps.first).to have_received(:call)
       end
     end
 
@@ -220,47 +297,69 @@ RSpec.describe Workflow, type: :model do
   end
 
   describe '#steps' do
+    let(:project) { create(:project, name: 'test-project', maintainer: user) }
+    let(:package) { create(:package, name: 'test-package', project: project) }
     let(:extractor_payload) do
       {
         scm: 'github',
         action: 'opened',
-        event: 'pull_request'
+        event: 'pull_request',
+        pr_number: 1,
+        target_repository_full_name: 'iggy/test-project'
       }
+    end
+
+    before do
+      login user
     end
 
     context 'with a supported step' do
       let(:yaml) do
-        { 'steps' => [{ 'branch_package' => { 'source_project' => 'test-project', 'source_package' => 'test-package' } }] }
+        { 'steps' => [{ branch_package: { source_project: project.name, source_package: package.name, target_project: project.name } }] }
       end
 
       it 'initializes the supported step objects' do
         expect(subject.steps.first).to be_a(Workflow::Step::BranchPackageStep)
       end
+
+      # This example requires VCR
+      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(1) }
     end
 
     context 'with several supported steps' do
       let(:yaml) do
-        { 'steps' => [{ 'branch_package' => { source_project: 'project',
-                                              source_package: 'package' } },
-                      { 'branch_package' => { source_project: 'project',
-                                              source_package: 'package' } }] }
+        { 'steps' => [{ 'branch_package' => { source_project: project.name,
+                                              source_package: package.name,
+                                              target_project: project.name } },
+                      { 'branch_package' => { source_project: project.name,
+                                              source_package: package.name,
+                                              target_project: project.name } }] }
       end
 
       it 'returns an array with two items' do
         expect(subject.steps.count).to be 2
+      end
+
+      # This example requires VCR
+      it 'creates no artifacts because an exception is raised' do
+        expect { subject.call }.to raise_error BranchPackage::Errors::DoubleBranchPackageError
       end
     end
 
     context 'with one unsupported step' do
       let(:yaml) do
         { 'steps' => [{ 'unsupported_step' => {} },
-                      { 'branch_package' => { source_project: 'project',
-                                              source_package: 'package' } }] }
+                      { 'branch_package' => { source_project: project.name,
+                                              source_package: package.name,
+                                              target_project: project.name } }] }
       end
 
       it 'returns an array with only one item' do
         expect(subject.steps.count).to be 1
       end
+
+      # This example requires VCR
+      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(1) }
     end
 
     context 'with no steps specified' do
@@ -271,6 +370,37 @@ RSpec.describe Workflow, type: :model do
       it 'returns an empty array' do
         expect(subject.steps).to be_empty
       end
+
+      # This example requires VCR
+      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
+    end
+
+    context 'with step with invalid intructions' do
+      let(:yaml) do
+        { 'steps' => [{ branch_package: { source_package: package.name, target_project: project.name } }] }
+      end
+
+      it 'initializes the supported step objects' do
+        expect(subject.steps.first).to be_a(Workflow::Step::BranchPackageStep)
+      end
+
+      # This example requires VCR
+      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
+    end
+
+    context 'with step with invalid project name' do
+      let(:yaml) do
+        { 'steps' => [{ 'branch_package' => { source_project: '0', # invalid project name
+                                              source_package: package.name,
+                                              target_project: project.name } }] }
+      end
+
+      it 'initializes the supported step objects' do
+        expect(subject.steps.first).to be_a(Workflow::Step::BranchPackageStep)
+      end
+
+      # This example requires VCR
+      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
     end
   end
 

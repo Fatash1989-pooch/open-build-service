@@ -4,14 +4,13 @@
 class Webui::WebuiController < ActionController::Base
   layout 'webui/webui'
 
-  helper_method :valid_xml_id
-
-  Rails.cache.set_domain if Rails.cache.respond_to?('set_domain')
+  Rails.cache.set_domain if Rails.cache.respond_to?(:set_domain)
 
   include Pundit
   include FlipperFeature
   include Webui::RescueHandler
   include SetCurrentRequestDetails
+  include Webui::ElisionsHelper
   protect_from_forgery
 
   before_action :set_influxdb_data
@@ -24,11 +23,6 @@ class Webui::WebuiController < ActionController::Base
 
   # :notice and :alert are default, we add :success and :error
   add_flash_types :success, :error
-
-  def valid_xml_id(rawid)
-    rawid = "_#{rawid}" if rawid !~ /^[A-Za-z_]/ # xs:ID elements have to start with character or '_'
-    CGI.escapeHTML(rawid.gsub(%r{[+&: ./~()@#]}, '_'))
-  end
 
   def home
     if params[:login].present?
@@ -157,7 +151,7 @@ class Webui::WebuiController < ActionController::Base
                                                  follow_project_links: true, follow_multibuild: true)
     rescue APIError => e
       if [Package::Errors::ReadSourceAccessError, Authenticator::AnonymousUser].include?(e.class)
-        flash[:error] = "You don't have access to the sources of this package: \"#{params[:package]}\""
+        flash[:error] = "You don't have access to the sources of this package: \"#{elide(params[:package])}\""
         redirect_back(fallback_location: project_show_path(@project))
         return
       end

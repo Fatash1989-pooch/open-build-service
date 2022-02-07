@@ -4,7 +4,7 @@ module StagingProject
 
   included do
     has_many :staged_requests, class_name: 'BsRequest', foreign_key: :staging_project_id, dependent: :nullify
-    belongs_to :staging_workflow, class_name: 'Staging::Workflow'
+    belongs_to :staging_workflow, class_name: 'Staging::Workflow', optional: true
 
     after_save :update_staging_workflow_on_backend, if: :staging_project?
     after_destroy :update_staging_workflow_on_backend, if: :staging_project?
@@ -67,7 +67,7 @@ module StagingProject
   end
 
   def untracked_requests
-    requests_to_review - staged_requests
+    @untracked_requests ||= requests_to_review - staged_requests
   end
 
   # The difference between staged requests and requests to review is that staged requests are assigned to the staging project.

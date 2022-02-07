@@ -1,12 +1,14 @@
 class Notification < ApplicationRecord
   MAX_RSS_ITEMS_PER_USER = 10
   MAX_RSS_ITEMS_PER_GROUP = 10
+  MAX_PER_PAGE = 300
 
-  belongs_to :subscriber, polymorphic: true
-  belongs_to :notifiable, polymorphic: true
+  belongs_to :subscriber, polymorphic: true, optional: true
+  belongs_to :notifiable, polymorphic: true, optional: true
 
   has_many :notified_projects, dependent: :destroy
   has_many :projects, through: :notified_projects
+  has_and_belongs_to_many :groups
 
   serialize :event_payload, JSON
 

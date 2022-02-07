@@ -9,7 +9,6 @@ class Package < ApplicationRecord
   include CanRenderModel
   include HasRelationships
   include Package::Errors
-  include HasRatings
   include HasAttributes
   include PackageSphinx
   include MultibuildPackage
@@ -22,7 +21,7 @@ class Package < ApplicationRecord
                        '.xpm', '.xz', '.z', '.zip', '.ttf'].freeze
 
   has_many :relationships, dependent: :destroy, inverse_of: :package
-  belongs_to :kiwi_image, class_name: 'Kiwi::Image', inverse_of: :package
+  belongs_to :kiwi_image, class_name: 'Kiwi::Image', inverse_of: :package, optional: true
   accepts_nested_attributes_for :kiwi_image
 
   belongs_to :project, inverse_of: :packages
@@ -36,11 +35,9 @@ class Package < ApplicationRecord
     @commit_user = User.session
   end
 
-  has_many :messages, as: :db_object, dependent: :delete_all
-
   has_many :flags, -> { order(:position) }, dependent: :delete_all, inverse_of: :package
 
-  belongs_to :develpackage, class_name: 'Package'
+  belongs_to :develpackage, class_name: 'Package', optional: true
   has_many :develpackages, class_name: 'Package', foreign_key: 'develpackage_id'
 
   has_many :attribs, dependent: :destroy
@@ -679,6 +676,7 @@ class Package < ApplicationRecord
       self.description = xmlhash.value('description')
       self.bcntsynctag = xmlhash.value('bcntsynctag')
       self.releasename = xmlhash.value('releasename')
+      self.scmsync = xmlhash.value('scmsync')
 
       #--- devel project ---#
       self.develpackage = nil
@@ -1332,8 +1330,8 @@ class Package < ApplicationRecord
     true
   end
 
-  def file_exists?(filename)
-    dir_hash.key?('entry') && [dir_hash['entry']].flatten.any? { |item| item['name'] == filename }
+  def file_exists?(filename, expand: 0)
+    dir_hash.key?('entry') && [dir_hash(expand: expand)['entry']].flatten.any? { |item| item['name'] == filename }
   end
 
   def has_icon?
@@ -1429,6 +1427,7 @@ end
 #  description     :text(65535)
 #  name            :string(200)      not null, indexed => [project_id]
 #  releasename     :string(255)
+#  scmsync         :string(255)
 #  title           :string(255)
 #  url             :string(255)
 #  created_at      :datetime

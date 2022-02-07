@@ -1,13 +1,17 @@
 class Token < ApplicationRecord
   belongs_to :user
   has_many :event_subscriptions, dependent: :destroy
-  belongs_to :package, inverse_of: :tokens
+  belongs_to :package, inverse_of: :tokens, optional: true
 
   attr_accessor :object_to_authorize
 
   has_secure_token :string
 
-  validates :user, presence: true
+  before_validation do
+    self.name ||= ''
+  end
+
+  validates :name, length: { maximum: 64 }
   validates :string, uniqueness: { case_sensitive: false }
   validates :scm_token, absence: true, if: -> { type != 'Token::Workflow' }
 
@@ -44,18 +48,24 @@ class Token < ApplicationRecord
   def follow_links?
     package_find_options[:follow_multibuild] || package_find_options[:follow_project_links]
   end
+
+  def set_triggered_at
+    update(triggered_at: Time.zone.now)
+  end
 end
 
 # == Schema Information
 #
 # Table name: tokens
 #
-#  id         :integer          not null, primary key
-#  scm_token  :string(255)      indexed
-#  string     :string(255)      indexed
-#  type       :string(255)
-#  package_id :integer          indexed
-#  user_id    :integer          not null, indexed
+#  id           :integer          not null, primary key
+#  name         :string(64)       default("")
+#  scm_token    :string(255)      indexed
+#  string       :string(255)      indexed
+#  triggered_at :datetime
+#  type         :string(255)
+#  package_id   :integer          indexed
+#  user_id      :integer          not null, indexed
 #
 # Indexes
 #

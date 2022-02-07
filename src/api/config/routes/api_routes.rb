@@ -22,6 +22,11 @@ OBSApi::Application.routes.draw do
     match 'person/register' => 'person#register', via: [:post, :put] # use /person?cmd=register POST instead
     match 'person/changepasswd' => 'person#change_my_password', via: [:post, :put] # use /person/:login?cmd=changepassword POST instead
     get 'person/:login/group' => 'person#grouplist', constraints: cons # Use /group?person=:login GET instead
+
+    ### notifications
+    get '/my/notifications' => 'person/notifications#index'
+    put '/my/notifications/:id' => 'person/notifications#update'
+
     # /FIXME3.0
     get 'person/:login' => 'person#get_userinfo', constraints: cons
     put 'person/:login' => 'person#put_userinfo', constraints: cons
@@ -38,7 +43,6 @@ OBSApi::Application.routes.draw do
 
     ### /service
     get 'service' => 'service#index'
-    get 'service/:service' => 'service#index_service', constraints: cons
 
     ### /source
     get 'source/:project/_keyinfo' => 'source/key_info#show', constraints: cons
@@ -84,16 +88,11 @@ OBSApi::Application.routes.draw do
       get 'statistics/added_timestamp/:project(/:package)' => :added_timestamp, constraints: cons
       get 'statistics/updated_timestamp/:project(/:package)' => :updated_timestamp, constraints: cons
 
-      # Ratings
-      #
-      get 'statistics/rating/:project(/:package)' => :rating, constraints: cons
-
       # Activity
       #
       get 'statistics/activity/:project(/:package)' => :activity, constraints: cons
 
       get 'statistics' => :index
-      get 'statistics/highest_rated' => :highest_rated
       get 'statistics/most_active_projects' => :most_active_projects
       get 'statistics/most_active_packages' => :most_active_packages
       get 'statistics/latest_added' => :latest_added
@@ -113,17 +112,6 @@ OBSApi::Application.routes.draw do
 
     get 'status_message' => 'status_messages#index'
     get 'status/workerstatus' => 'worker/status#index'
-
-    ### /message
-
-    # Routes for messages
-    # --------------------------
-    controller :message do
-      put 'message' => :update
-      get 'message' => :list
-      get 'message/:id' => :show
-      delete 'message/:id' => :delete
-    end
 
     ### /search
 
@@ -180,10 +168,6 @@ OBSApi::Application.routes.draw do
         put '' => :bulk_replace
       end
     end
-
-    ### /mail_handler
-
-    put '/mail_handler' => 'mail_handler#upload'
 
     ### /cloud/upload
 

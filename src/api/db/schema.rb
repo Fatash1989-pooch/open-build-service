@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema.define(version: 2021_07_19_103830) do
+ActiveRecord::Schema.define(version: 2022_01_26_155601) do
 
   create_table "architectures", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
     t.string "name", null: false, collation: "utf8_general_ci"
@@ -474,6 +474,13 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.index ["title"], name: "index_groups_on_title"
   end
 
+  create_table "groups_notifications", id: false, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", force: :cascade do |t|
+    t.bigint "notification_id", null: false
+    t.bigint "group_id", null: false
+    t.index ["group_id", "notification_id"], name: "index_groups_notifications_on_group_id_and_notification_id"
+    t.index ["notification_id", "group_id"], name: "index_groups_notifications_on_notification_id_and_group_id"
+  end
+
   create_table "groups_roles", id: false, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
     t.integer "group_id", default: 0, null: false
     t.integer "role_id", default: 0, null: false
@@ -487,6 +494,7 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.integer "user_id", default: 0, null: false
     t.datetime "created_at"
     t.boolean "email", default: true
+    t.boolean "web", default: true
     t.index ["group_id", "user_id"], name: "groups_users_all_index", unique: true
     t.index ["user_id"], name: "user_id"
   end
@@ -650,20 +658,6 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.index ["maintenance_db_project_id"], name: "index_maintenance_incidents_on_maintenance_db_project_id"
   end
 
-  create_table "messages", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
-    t.integer "db_object_id"
-    t.string "db_object_type", collation: "utf8_general_ci"
-    t.integer "user_id"
-    t.datetime "created_at"
-    t.boolean "send_mail"
-    t.datetime "sent_at"
-    t.boolean "private"
-    t.integer "severity"
-    t.text "text"
-    t.index ["db_object_id"], name: "object"
-    t.index ["user_id"], name: "user"
-  end
-
   create_table "notifications", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
     t.string "event_type", null: false, collation: "utf8_general_ci"
     t.text "event_payload", null: false
@@ -721,6 +715,7 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.boolean "delta", default: true, null: false
     t.string "releasename", collation: "utf8_bin"
     t.integer "kiwi_image_id"
+    t.string "scmsync"
     t.index ["develpackage_id"], name: "devel_package_id_index"
     t.index ["kiwi_image_id"], name: "index_packages_on_kiwi_image_id"
     t.index ["project_id", "name"], name: "packages_all_index", unique: true
@@ -808,20 +803,11 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.string "url", collation: "utf8_bin"
     t.string "required_checks"
     t.integer "staging_workflow_id"
+    t.string "scmsync"
     t.index ["develproject_id"], name: "devel_project_id_index"
     t.index ["name"], name: "projects_name_index", unique: true
     t.index ["staging_workflow_id"], name: "index_projects_on_staging_workflow_id"
     t.index ["updated_at"], name: "updated_at_index"
-  end
-
-  create_table "ratings", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
-    t.integer "score"
-    t.integer "db_object_id"
-    t.string "db_object_type", collation: "utf8_general_ci"
-    t.datetime "created_at"
-    t.integer "user_id"
-    t.index ["db_object_id"], name: "object"
-    t.index ["user_id"], name: "user"
   end
 
   create_table "relationships", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", options: "ENGINE=InnoDB ROW_FORMAT=DYNAMIC", force: :cascade do |t|
@@ -1015,6 +1001,8 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.integer "package_id"
     t.string "type", collation: "utf8_unicode_ci"
     t.string "scm_token"
+    t.string "name", limit: 64, default: ""
+    t.datetime "triggered_at"
     t.index ["package_id"], name: "package_id"
     t.index ["scm_token"], name: "index_tokens_on_scm_token"
     t.index ["string"], name: "index_tokens_on_string", unique: true
@@ -1067,6 +1055,27 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
     t.integer "user_id", default: 0, null: false
     t.integer "project_id", null: false
     t.index ["user_id"], name: "watched_projects_users_fk_1"
+  end
+
+  create_table "workflow_artifacts_per_steps", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", force: :cascade do |t|
+    t.integer "workflow_run_id", null: false
+    t.string "step"
+    t.text "artifacts"
+    t.datetime "created_at", precision: 6, null: false
+    t.datetime "updated_at", precision: 6, null: false
+    t.index ["workflow_run_id"], name: "index_workflow_artifacts_per_steps_on_workflow_run_id"
+  end
+
+  create_table "workflow_runs", id: :integer, charset: "utf8mb4", collation: "utf8mb4_unicode_ci", force: :cascade do |t|
+    t.text "request_headers", null: false
+    t.text "request_payload", null: false
+    t.integer "status", limit: 1, default: 0, null: false
+    t.text "response_body"
+    t.datetime "created_at", precision: 6, null: false
+    t.datetime "updated_at", precision: 6, null: false
+    t.integer "token_id", null: false
+    t.string "response_url"
+    t.index ["token_id"], name: "index_workflow_runs_on_token_id"
   end
 
   add_foreign_key "attrib_allowed_values", "attrib_types", name: "attrib_allowed_values_ibfk_1"
@@ -1138,7 +1147,6 @@ ActiveRecord::Schema.define(version: 2021_07_19_103830) do
   add_foreign_key "product_update_repositories", "repositories", name: "product_update_repositories_ibfk_2"
   add_foreign_key "products", "packages", name: "products_ibfk_1"
   add_foreign_key "project_log_entries", "projects", name: "project_log_entries_ibfk_1"
-  add_foreign_key "ratings", "users", name: "ratings_ibfk_1"
   add_foreign_key "relationships", "groups", name: "relationships_ibfk_3"
   add_foreign_key "relationships", "packages", name: "relationships_ibfk_5"
   add_foreign_key "relationships", "projects", name: "relationships_ibfk_4"

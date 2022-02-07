@@ -509,11 +509,13 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     get '/search/owner?user=fred&filter=INVALID'
     assert_response 404
     assert_xml_tag tag: 'status', attributes: { code: 'not_found' }
-    get '/search/owner?package=TestPack'
-    assert_response 400
-    assert_xml_tag tag: 'status', attributes: { code: 'no_binary' }
     get '/search/owner?project=DOESNOTEXIST'
     assert_response 404
+
+    # search by package container name, base projects are set via attribute
+    get '/search/owner?package=TestPack'
+    assert_response :success
+    assert_xml_tag tag: 'owner', attributes: { project: 'home:Iggy', package: 'TestPack' }
 
     # set devel package (this one has another devel package in home:coolo:test)
     pkg = Package.find_by_project_and_name('home:Iggy', 'TestPack')
@@ -565,7 +567,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     put '/source/TEMPORARY/pack/_meta',
         params: "<package name='pack' project='TEMPORARY'><title/><description/><group groupid='test_group' role='bugowner'/></package>"
     assert_response :success
-    raw_put '/source/TEMPORARY/pack/package.spec', File.open("#{Rails.root}/test/fixtures/backend/binary/package.spec").read
+    raw_put '/source/TEMPORARY/pack/package.spec', File.read("#{Rails.root}/test/fixtures/backend/binary/package.spec")
     assert_response :success
     run_scheduler('i586')
     inject_build_job('TEMPORARY', 'pack', 'standard', 'i586')
@@ -592,13 +594,6 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_xml_tag tag: 'owner', attributes: { project: 'TEMPORARY', package: 'pack' }
     assert_no_xml_tag tag: 'owner', attributes: { project: 'home:coolo:test' }
     assert_xml_tag tag: 'group', attributes: { name: 'test_group', role: 'bugowner' }
-
-    get '/search/owner?project=TEMPORARY&binary=package&filter=reviewer&webui_mode=true'
-    assert_response :success
-    assert_xml_tag tag: 'owner', attributes: { rootproject: 'TEMPORARY', project: 'TEMPORARY', package: 'pack' },
-                   children: { count: 0 }
-    assert_xml_tag tag: 'owner', attributes: { rootproject: 'TEMPORARY', project: 'home:Iggy', package: 'TestPack' },
-                   children: { count: 0 }
 
     # deepest package definition
     get '/search/owner?project=TEMPORARY&binary=package&limit=-1'
@@ -635,7 +630,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_xml_tag tag: 'person', attributes: { name: 'king', role: 'maintainer' }
     assert_xml_tag tag: 'group', attributes: { name: 'test_group', role: 'maintainer' }
 
-    # search for not mantainer packages
+    # search for un-maintained packages
     get '/search/missing_owner'
     assert_response :success
     assert_xml_tag tag: 'collection', children: { count: 0 } # all defined
@@ -720,7 +715,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   def test_search_for_missing_role_defintions_in_all_visible_packages
     login_Iggy
 
-    # search for not mantainer packages
+    # search for un-maintained packages
     get '/search/missing_owner?project=BaseDistro&filter=bugowner'
     assert_response :success
     assert_xml_tag tag: 'missing_owner', attributes: { rootproject: 'BaseDistro', project: 'BaseDistro', package: 'pack1' }
@@ -761,9 +756,9 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
                                                  <person userid='fred' role='bugowner' />
                                                </package>"
     assert_response :success
-    raw_put '/source/TEMPORARY:GA/package/package.spec', File.open("#{Rails.root}/test/fixtures/backend/binary/package.spec").read
+    raw_put '/source/TEMPORARY:GA/package/package.spec', File.read("#{Rails.root}/test/fixtures/backend/binary/package.spec")
     assert_response :success
-    raw_put '/source/TEMPORARY:Update/package/package.spec', File.open("#{Rails.root}/test/fixtures/backend/binary/package.spec").read
+    raw_put '/source/TEMPORARY:Update/package/package.spec', File.read("#{Rails.root}/test/fixtures/backend/binary/package.spec")
     assert_response :success
 
     # package exists only in Update

@@ -38,6 +38,8 @@ RSpec.describe "Package", type: :feature do
     end
     click_link('Branch Package')
     fill_in 'linked_project', with: 'openSUSE.org:openSUSE:Tools'
+    # In Unstable the field 'linked_package' is disabled until focus is out of 'linked_project'
+    find_field('linked_package', disabled: true).click if has_field?('linked_package', disabled: true)
     fill_in 'linked_package', with: 'build'
     click_button('Branch')
     expect(page).to have_content('build.spec')
@@ -59,7 +61,7 @@ RSpec.describe "Package", type: :feature do
   it "should be able to successfully build" do
     100.downto(1) do |counter|
       visit("/package/show/home:Admin/hello_world")
-      # wait for the build results ajax call
+      # Force to wait for the build results ajax call. page.all doesn't wait for AJAX calls to finish
       sleep(5)
       puts "Refreshed build results, #{counter} retries left."
       builds_in_final_state = page.all('a', class: /build-state-(succeeded|failed)/).length

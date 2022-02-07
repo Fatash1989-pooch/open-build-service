@@ -1012,6 +1012,7 @@ sub create {
 
   my $kiwimode;
   $kiwimode = $buildtype if $buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product' || $buildtype eq 'docker' || $buildtype eq 'fissile';
+  my $ccache;
 
   my $syspath;
   my $searchpath = path2buildinfopath($gctx, $ctx->{'prpsearchpath'});
@@ -1067,7 +1068,8 @@ sub create {
     my $opackid = $packid;
     $opackid = $pdata->{'releasename'} if $pdata->{'releasename'};
     if (grep {$_ eq "useccache:$opackid" || $_ eq "useccache:$packid"} @{$bconf->{'buildflags'} || []}) {
-      push @bdeps, @{$bconf->{'substitute'}->{'build-packages:ccache'} || [ 'ccache' ] };
+      $ccache = $bconf->{'buildflags:ccachetype'} || 'ccache';
+      push @bdeps, @{$bconf->{'substitute'}->{"build-packages:$ccache"} || [ $ccache ] };
     }
   }
 
@@ -1161,6 +1163,7 @@ sub create {
         $_->{'version'}    = $d->{'version'};
         $_->{'release'}    = $d->{'release'} if defined $d->{'release'};
         $_->{'arch'}       = $d->{'arch'} if $d->{'arch'};
+        $_->{'hdrmd5'}     = $d->{'hdrmd5'} if $d->{'hdrmd5'};
         $_->{'preimghdrmd5'} = $d->{'hdrmd5'} if !$_->{'noinstall'} && $d->{'hdrmd5'};
 	$_->{'repoarch'}   = $BSConfig::localarch if $myarch eq 'local' && $BSConfig::localarch;
       }
@@ -1185,6 +1188,7 @@ sub create {
   $binfo->{'constraintsmd5'} = $pdata->{'constraintsmd5'} if $pdata->{'constraintsmd5'};
   $binfo->{'prjconfconstraint'} = $bconf->{'constraint'} if @{$bconf->{'constraint'} || []};
   $binfo->{'nounchanged'} = 1 if $info->{'nounchanged'};
+  $binfo->{'ccache'} = $ccache if $ccache;
   if (!$ctx->{'isreposerver'} && ($proj->{'kind'} || '') eq 'maintenance_incident' && $pdata->{'releasename'}) {
     $binfo->{'releasename'} = $pdata->{'releasename'};
   }
@@ -1393,6 +1397,36 @@ sub diffsortedmd5 {
   return @ret;
 }
 
+=head2 createextrapool - create a pool of nonstandard repositories
+
+ TODO: add description
+
+=cut
+
+sub createextrapool {
+  my ($ctx, $bconf, $prps, $unorderedrepos, $prios, $arch) = @_;
+  my $pool = $ctx->newpool($bconf);
+  my $delayed = '';
+  for my $prp (@{$prps || []}) {
+    return (undef, "repository '$prp' is unavailable") if !$ctx->checkprpaccess($prp);
+    my $r = $ctx->addrepo($pool, $prp, $arch);
+    if (!$r) {
+      my $error = "repository '$prp' is unavailable";
+      return (undef, $error) unless defined $r;
+      $delayed .= ", $error";
+    }
+  }
+  return (undef, substr($delayed, 2), 1) if $delayed;
+  if ($unorderedrepos) {
+    return(undef, 'perl-BSSolv does not support unordered repos') unless defined &BSSolv::repo::setpriority;
+    $_->setpriority($prios->{$_->name()} || 0) for $pool->repos();
+    $pool->createwhatprovides(1);
+  } else {
+    $pool->createwhatprovides();
+  }
+  return $pool;
+}
+
 =head2 expandkiwipath - turn the path from the info into a kiwi searchpath
 
  TODO: add description
@@ -1425,6 +1459,7 @@ sub expandkiwipath {
 
 sub getcontainerannotation {
   my ($pool, $p, $bdep) = @_;
+  return undef unless $p;
   return undef unless defined &BSSolv::pool::pkg2annotation;
   my $annotation = $pool->pkg2annotation($p);
   return undef unless $annotation;
@@ -1442,6 +1477,27 @@ sub getcontainerannotation {
     $bdep->{'annotation'} = BSUtil::toxml($annotation, $BSXML::binannotation);
   }
   return $annotation;
+}
+
+=head2 add_container_deps - add container data to the context
+
+ This adds the container bdeps as extrabdeps and sets the containerpath and
+ containerannotation.
+
+ We also strip out the package ids from the bdeps as side effect.
+
+ Note that the context should be cloned before calling this so that the data does
+ not leak.
+
+=cut
+
+sub add_container_deps {
+  my ($ctx, $cbdeps) = @_;
+  return unless @{$cbdeps || []};
+  delete $_->{'p'} for @$cbdeps;	# strip package ids
+  push @{$ctx->{'extrabdeps'}}, @$cbdeps;
+  $ctx->{'containerpath'} = [ BSUtil::unify(map {"$_->{'project'}/$_->{'repository'}"} grep {$_->{'project'}} @$cbdeps) ];
+  $ctx->{'containerannotation'} = delete $_->{'annotation'} for @$cbdeps;
 }
 
 1;

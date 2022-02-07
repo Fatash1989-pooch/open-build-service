@@ -10,11 +10,11 @@ class BsRequestAction < ApplicationRecord
   #### Attributes
 
   #### Associations macros (Belongs to, Has one, Has many)
-  belongs_to :bs_request, touch: true
+  belongs_to :bs_request, touch: true, optional: true
   has_one :bs_request_action_accept_info, dependent: :delete
 
-  belongs_to :target_package_object, class_name: 'Package', foreign_key: 'target_package_id'
-  belongs_to :target_project_object, class_name: 'Project', foreign_key: 'target_project_id'
+  belongs_to :target_package_object, class_name: 'Package', foreign_key: 'target_package_id', optional: true
+  belongs_to :target_project_object, class_name: 'Project', foreign_key: 'target_project_id', optional: true
 
   scope :bs_request_ids_of_involved_projects, ->(project_ids) { where(target_project_id: project_ids).select(:bs_request_id) }
   scope :bs_request_ids_of_involved_packages, ->(package_ids) { where(target_package_id: package_ids).select(:bs_request_id) }
@@ -37,6 +37,7 @@ class BsRequestAction < ApplicationRecord
   }
 
   before_validation :set_target_associations
+  after_create :cache_diffs
 
   #### Class methods using self. (public and then private)
   def self.type_to_class_name(type_name)
@@ -260,7 +261,7 @@ class BsRequestAction < ApplicationRecord
   def webui_infos(opts = {})
     begin
       opts[:view] = 'xml'
-      opts[:withissues] = true
+      opts[:withissues] = 1
 
       sd = sourcediff(opts)
     rescue DiffError, Project::UnknownObjectError, Package::UnknownObjectError => e
@@ -820,6 +821,16 @@ class BsRequestAction < ApplicationRecord
   end
 
   private
+
+  def cache_diffs
+    # It's to avoid unnecessary backend calls in test suite. If `global_write_through` is enabled, it will affect a major
+    # part of the test suite and requires to update 100's of VCR cassettes.
+    # global_write_through is only disabled in test env. Otherwise, it's always enabled.
+    return unless CONFIG['global_write_through']
+
+    set_sourceupdate_default(User.session!)
+    BsRequestActionWebuiInfosJob.perform_later(self)
+  end
 
   def create_submit_action(source_package:, source_project:, target_package:, target_project:,
                            source_rev:)

@@ -78,3 +78,9 @@ Breaking API changes:
    'announcement' severity. Check the API documentation about Status Messages.
  * The API endpoints '/statistics/download_counter', '/search/attribute' and '/statistics/newest_stats'
    have been removed. They have been non-functional or unused for a long time.
+ * Messages (for projects/packages) removed. The API routes below '/message'
+   were deprecated in the previous release. They are now removed.
+ * Remove Ratings. The following API routes were already deprecated in the
+   previous release, and are now removed:
+   - GET /statistics/highest_rated?limit=<limit>
+   - GET /statistics/rating/<project>/<package>

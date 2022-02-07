@@ -1,17 +1,15 @@
 class SearchFinder
   include ActiveModel::Validations
 
-  attr_reader :included_classes, :relation, :what, :render_all, :params, :search_items, :preloaded_classes
+  attr_reader :included_classes, :relation, :what, :render_all, :search_items
 
   validates :what, inclusion: [:package, :project, :repository, :request, :person, :channel, :channel_binary, :released_binary, :issue]
 
-  def initialize(what:, search_items: [], render_all: false, params: {})
+  def initialize(what:, search_items: [], render_all: false)
     @what = what
     @render_all = render_all
     @search_items = search_items
-    @params = params
     @included_classes = []
-    @preloaded_classes = []
   end
 
   def call
@@ -26,7 +24,6 @@ class SearchFinder
       @relation = repositories
     when :request
       @relation = bs_requests
-      @preloads = bs_request_preloads
     when :person
       @relation = users
     when :channel, :channel_binary
@@ -36,15 +33,10 @@ class SearchFinder
     when :issue
       @relation = issues
     end
-    @relation.includes(@included_classes).references(@included_classes).preload(@preloaded_classes)
+    @relation.includes(@included_classes).references(@included_classes)
   end
 
   private
-
-  def bs_request_preloads
-    [:reviews, { review_history_elements: :user },
-     { bs_request_actions: :bs_request_action_accept_info }]
-  end
 
   def packages
     @included_classes = [:project]

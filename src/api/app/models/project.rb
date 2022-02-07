@@ -4,7 +4,6 @@ class Project < ApplicationRecord
   include Flag::Validations
   include CanRenderModel
   include HasRelationships
-  include HasRatings
   include HasAttributes
   include MaintenanceHelper
   include ProjectSphinx
@@ -56,14 +55,13 @@ class Project < ApplicationRecord
   has_many :linked_repositories, through: :path_elements, source: :link, foreign_key: :repository_id
   has_many :repository_architectures, -> { order('position') }, through: :repositories
 
-  has_many :messages, as: :db_object, dependent: :delete_all
   has_many :watched_projects, dependent: :destroy, inverse_of: :project
 
   has_many :flags, dependent: :delete_all, inverse_of: :project
 
   # develproject is history, use develpackage instead. FIXME3.0: clean this up
   has_many :develprojects, class_name: 'Project', foreign_key: 'develproject_id'
-  belongs_to :develproject, class_name: 'Project'
+  belongs_to :develproject, class_name: 'Project', optional: true
 
   has_many :comments, as: :commentable, dependent: :destroy
 
@@ -1544,6 +1542,7 @@ end
 #  remoteproject       :string(255)
 #  remoteurl           :string(255)
 #  required_checks     :string(255)
+#  scmsync             :string(255)
 #  title               :string(255)
 #  url                 :string(255)
 #  created_at          :datetime
