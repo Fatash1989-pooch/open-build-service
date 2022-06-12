@@ -66,6 +66,8 @@ Style/HashTransformKeys:
   Enabled: false
 Style/HashTransformValues:
   Enabled: false
+Style/HashSyntax:
+  EnforcedShorthandSyntax: either
 
 # We agreed on disabling this cop since it's often a sign of a code smell when we need to use `something&.my_method`
 Style/SafeNavigation:
@@ -78,7 +80,6 @@ Metrics/ClassLength:
 
 Layout/LineLength:
   Max: 150
-  IgnoredPatterns: ['\A#']
 
 Metrics/ModuleLength:
   Severity: refactor
@@ -89,3 +90,7 @@ Rails/RakeEnvironment:
   Exclude:
     # All tasks are executing scripts and those don't need application code nor the environment
     - 'Rakefile'
+
+# This requires texts be moved to the locale files in the config/locales directory
+Rails/I18nLocaleTexts:
+  Enabled: false

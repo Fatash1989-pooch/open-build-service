@@ -1,4 +1,10 @@
 class WorkflowRunsFinder
+  EVENT_TYPE_MAPPING = {
+    'pull_request' => ['pull_request', 'Merge Request Hook'],
+    'push' => ['push', 'Push Hook'],
+    'tag_push' => ['push', 'Tag Push Hook']
+  }.freeze
+
   def initialize(relation = WorkflowRun.all)
     @relation = relation.order(created_at: :desc)
   end
@@ -7,16 +13,30 @@ class WorkflowRunsFinder
     @relation.all
   end
 
-  def group_by_event_type
+  def group_by_generic_event_type
     @relation.all.each_with_object(Hash.new(0)) do |workflow_run, grouped_workflows|
-      grouped_workflows[workflow_run.hook_event] += 1
+      grouped_workflows[workflow_run.generic_event_type] += 1
     end
   end
 
-  def with_event_type(event_type)
-    allowed_events = ScmWebhookEventValidator::ALLOWED_GITHUB_EVENTS + ScmWebhookEventValidator::ALLOWED_GITLAB_EVENTS
-    filtered_event_type = '%' + ([event_type] & allowed_events).first + '%'
-    @relation.where('request_headers LIKE ?', filtered_event_type)
+  def with_generic_event_type(generic_event_type, request_action = nil)
+    query = case generic_event_type
+            when 'tag_push'
+              "request_headers LIKE '%: Tag Push Hook%' OR JSON_EXTRACT(request_payload, '$.ref') LIKE '%refs/tags/%'"
+            when 'push'
+              "request_headers LIKE '%: Push Hook%' OR JSON_EXTRACT(request_payload, '$.ref') LIKE '%refs/heads/%'"
+            else
+              EVENT_TYPE_MAPPING[generic_event_type].map do |event_type|
+                "request_headers LIKE '%: #{event_type}%'"
+              end.join(' OR ')
+            end
+
+    workflow_runs = @relation.where(query)
+    if request_action && generic_event_type == 'pull_request'
+      workflow_runs = workflow_runs.where("JSON_EXTRACT(request_payload, '$.action') = (?) OR JSON_EXTRACT(request_payload, '$.object_attributes.action') = (?)", request_action,
+                                          request_action)
+    end
+    workflow_runs
   end
 
   def with_status(status)

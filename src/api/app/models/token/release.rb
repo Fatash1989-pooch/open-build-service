@@ -1,10 +1,6 @@
 class Token::Release < Token
   include MaintenanceHelper
 
-  def self.token_name
-    'release'
-  end
-
   def call(options)
     set_triggered_at
     return unless options[:package]
@@ -36,7 +32,7 @@ end
 # Table name: tokens
 #
 #  id           :integer          not null, primary key
-#  name         :string(64)       default("")
+#  description  :string(64)       default("")
 #  scm_token    :string(255)      indexed
 #  string       :string(255)      indexed
 #  triggered_at :datetime

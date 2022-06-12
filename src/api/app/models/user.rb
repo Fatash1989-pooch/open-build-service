@@ -14,6 +14,8 @@ class User < ApplicationRecord
   # password yet. this is for backwards compatibility
   has_secure_password validations: false
 
+  has_many :watched_items, dependent: :destroy
+  # FIXME: We will remove the following association when new_watchlist goes out of beta
   has_many :watched_projects, dependent: :destroy, inverse_of: :user
   has_many :groups_users, inverse_of: :user
   has_many :roles_users, inverse_of: :user
@@ -50,6 +52,8 @@ class User < ApplicationRecord
 
   has_many :status_message_acknowledgements, dependent: :destroy
   has_many :acknowledged_status_messages, through: :status_message_acknowledgements, class_name: 'StatusMessage', source: 'status_message'
+
+  has_many :disabled_beta_features, dependent: :destroy
 
   scope :confirmed, -> { where(state: 'confirmed') }
   scope :all_without_nobody, -> { where.not(login: NOBODY_LOGIN) }
@@ -369,9 +373,9 @@ class User < ApplicationRecord
     render_axml
   end
 
-  def render_axml(watchlist = false)
+  def render_axml(watchlist = false, render_watchlist_only: false)
     # CanRenderModel
-    render_xml(watchlist: watchlist)
+    render_xml(watchlist: watchlist, render_watchlist_only: render_watchlist_only)
   end
 
   def home_project_name

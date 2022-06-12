@@ -13,7 +13,7 @@ module Webui::WebuiHelper
       cc = ('&cc=' + email_list[1..-1].join('&cc=')) if email_list
     end
 
-    URI.escape(
+    Addressable::URI.escape(
       "#{@configuration['bugzilla_url']}/enter_bug.cgi?classification=7340&product=openSUSE.org" \
       "&component=3rd party software&assigned_to=#{assignee}#{cc}&short_desc=#{desc}"
     )
@@ -103,7 +103,8 @@ module Webui::WebuiHelper
   end
 
   def repository_status_icon(status:, details: nil, html_class: '')
-    outdated = status.sub!(/^outdated_/, '')
+    outdated = status.start_with?('outdated_')
+    status = status.sub('outdated_', '')
     description = outdated ? 'State needs recalculations, former state was: ' : ''
     description << repo_status_description(status)
     description << " (#{details})" if details
@@ -289,7 +290,7 @@ module Webui::WebuiHelper
 
   def feature_css_class
     css_classes = []
-    css_classes << 'notifications-redesign' if feature_enabled?(:notifications_redesign)
+    css_classes << 'new-watchlist' if feature_enabled?(:new_watchlist)
     css_classes.join(' ')
   end
 

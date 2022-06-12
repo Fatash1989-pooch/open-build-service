@@ -220,6 +220,95 @@ RSpec.describe BsRequest, vcr: true do
       it { expect { request.change_state(newstate: 'review') }.to raise_error(PostRequestNoPermission) }
     end
 
+    context 'when the request is accepted' do
+      let(:creator) { create(:confirmed_user, login: 'sagan') }
+      let(:source_project) { create(:project, name: 'source_project_123', maintainer: creator) }
+      let(:source_package) { create(:package, project: source_project, name: 'source_package_123') }
+      let(:target_project) { create(:project, name: 'project_123', maintainer: creator) }
+      let(:target_package) { create(:package, project: target_project, name: 'package_123') }
+      let!(:request) do
+        create(:bs_request_with_submit_action, source_project: source_project, source_package: source_package, target_project: target_project, target_package: target_package,
+                                               creator: creator, description: 'A single comment')
+      end
+
+      context 'and the target project has an attribute to disallow acceptance by the creator' do
+        context 'and the accepter is the creator' do
+          before do
+            login creator
+
+            # Attach the attribute to the target project so to trigger the validation
+            attrib_type = AttribType.find_by_namespace_and_name!('OBS', 'CreatorCannotAcceptOwnRequests')
+            a = Attrib.create!(attrib_type: attrib_type, project: target_project)
+            a.values.create(value: '1')
+          end
+
+          it 'triggers an error' do
+            expect { request.change_state(newstate: 'accepted', force: true) }.to raise_error(BsRequest::Errors::CreatorCannotAcceptOwnRequests)
+          end
+        end
+
+        context 'and the accepter is NOT the creator' do
+          let(:user) { create(:confirmed_user, login: 'clarke') }
+
+          before do
+            # Make the user be part of the staff of the project, so we can send requests to it
+            create(:relationship_project_user, project: target_project, user: user)
+
+            login user
+
+            # Attach the attribute to the target project so to trigger the validation
+            attrib_type = AttribType.find_by_namespace_and_name!('OBS', 'CreatorCannotAcceptOwnRequests')
+            a = Attrib.create!(attrib_type: attrib_type, project: target_project)
+            a.values.create(value: '1')
+          end
+
+          it 'accepts the request' do
+            request.change_state(newstate: 'accepted', force: true)
+            expect(request.state).to be(:accepted)
+          end
+        end
+      end
+
+      context 'and the target package has an attribute to disallow acceptance by the creator' do
+        context 'and the accepter is the creator' do
+          before do
+            login creator
+
+            # Attach the attribute to the target project so to trigger the validation
+            attrib_type = AttribType.find_by_namespace_and_name!('OBS', 'CreatorCannotAcceptOwnRequests')
+            a = Attrib.create!(attrib_type: attrib_type, package: target_package)
+            a.values.create(value: '1')
+          end
+
+          it 'triggers an error' do
+            expect { request.change_state(newstate: 'accepted') }.to raise_error(BsRequest::Errors::CreatorCannotAcceptOwnRequests)
+          end
+        end
+
+        context 'and the accepter is NOT the creator' do
+          let(:user) { create(:confirmed_user, login: 'bujold') }
+
+          before do
+            login user
+
+            # Attach the attribute to the target project so to trigger the validation
+            attrib_type = AttribType.find_by_namespace_and_name!('OBS', 'CreatorCannotAcceptOwnRequests')
+            a = Attrib.create!(attrib_type: attrib_type, package: target_package)
+            a.values.create(value: '1')
+
+            # Make the user be part of the staff of the project, so we can send requests to it
+            create(:relationship_project_user, project: target_project, user: user)
+          end
+
+          it 'accepts the request' do
+            request.change_state(newstate: 'accepted', force: true)
+
+            expect(request.state).to be(:accepted)
+          end
+        end
+      end
+    end
+
     context 'final state accepted cannot be changed' do
       let!(:request) do
         create(:bs_request_with_submit_action,
@@ -384,7 +473,7 @@ RSpec.describe BsRequest, vcr: true do
         ]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(false) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(false) }
     end
 
     context 'when there is no sourcediff' do
@@ -395,7 +484,7 @@ RSpec.describe BsRequest, vcr: true do
         ]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(false) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(false) }
     end
 
     context 'when the sourcediff is empty' do
@@ -406,7 +495,7 @@ RSpec.describe BsRequest, vcr: true do
         ]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(false) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(false) }
     end
 
     context 'when the diff is at least one diff that has a shown attribute' do
@@ -414,7 +503,7 @@ RSpec.describe BsRequest, vcr: true do
         [{ type: :submit, sourcediff: [{ 'files' => [['./my_file', { 'diff' => { 'shown' => '200' } }]] }] }]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(true) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(true) }
     end
 
     context 'when none of the diffs has a shown attribute' do
@@ -422,7 +511,7 @@ RSpec.describe BsRequest, vcr: true do
         [{ type: :submit, sourcediff: [{ 'files' => [['./my_file', { 'diff' => { 'rev' => '1' } }]] }] }]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(false) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(false) }
     end
 
     context "when there is a sourcediff attribute with no 'files'" do
@@ -430,7 +519,7 @@ RSpec.describe BsRequest, vcr: true do
         [{ type: :submit, sourcediff: [{ 'other_data' => 'foo' }] }]
       end
 
-      it { expect(BsRequest.truncated_diffs?(request_actions)).to eq(false) }
+      it { expect(BsRequest.truncated_diffs?(request_actions)).to be(false) }
     end
   end
 
@@ -504,7 +593,7 @@ RSpec.describe BsRequest, vcr: true do
       end
 
       it 'does not change the priority of the bs request' do
-        expect { bs_request.sanitize! }.not_to(change { HistoryElement::RequestPriorityChange.count })
+        expect { bs_request.sanitize! }.not_to(change(HistoryElement::RequestPriorityChange, :count))
         expect(bs_request.priority).to eq('moderate')
       end
     end
@@ -728,7 +817,7 @@ RSpec.describe BsRequest, vcr: true do
 
       it 'sets the value for diff_not_cached' do
         action_details = request.send(:action_details, opts, xml: request.bs_request_actions.last)
-        expect(action_details[:diff_not_cached]).to eq(false)
+        expect(action_details[:diff_not_cached]).to be(false)
       end
     end
   end

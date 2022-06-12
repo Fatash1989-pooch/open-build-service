@@ -3,7 +3,7 @@ module Event
     include CommentEvent
     self.message_bus_routing_key = 'package.comment'
     self.description = 'New comment for package created'
-    receiver_roles :maintainer, :bugowner, :watcher
+    receiver_roles :maintainer, :bugowner, :watcher, :package_watcher
     payload_keys :project, :package, :sender
 
     def subject
@@ -16,7 +16,7 @@ end
 #
 # Table name: events
 #
-#  id          :integer          not null, primary key
+#  id          :bigint           not null, primary key
 #  eventtype   :string(255)      not null, indexed
 #  mails_sent  :boolean          default(FALSE), indexed
 #  payload     :text(65535)

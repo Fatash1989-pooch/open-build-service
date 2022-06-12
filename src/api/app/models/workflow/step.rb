@@ -1,15 +1,18 @@
 class Workflow::Step
   include ActiveModel::Model
+  include WorkflowStepInstrumentation # for run_callbacks
 
   SHORT_COMMIT_SHA_LENGTH = 7
 
   validate :validate_step_instructions
 
-  attr_accessor :scm_webhook, :step_instructions, :token
+  attr_accessor :scm_webhook, :step_instructions, :token, :workflow_run
 
   def initialize(attributes = {})
-    super
-    @step_instructions = attributes[:step_instructions]&.deep_symbolize_keys || {}
+    run_callbacks(:initialize) do
+      super
+      @step_instructions = attributes[:step_instructions]&.deep_symbolize_keys || {}
+    end
   end
 
   def call(_options)
@@ -45,7 +48,8 @@ class Workflow::Step
                                                           channel: 'scm',
                                                           enabled: true,
                                                           token: @token,
-                                                          package: package)
+                                                          package: package,
+                                                          workflow_run: workflow_run)
       subscription.update!(payload: scm_webhook.payload.merge({ workflow_filters: workflow_filters }))
     end
   end
@@ -89,15 +93,7 @@ class Workflow::Step
     step_instructions[:source_project]
   end
 
-  def target_package_names
-    [target_package_name(short_commit_sha: true)] + multibuild_flavors
-  end
-
   private
-
-  def multibuild_flavors
-    target_package.multibuild_flavors.collect { |flavor| "#{target_package_name}:#{flavor}" }
-  end
 
   def target_project_base_name
     raise AbstractMethodCalled
@@ -139,46 +135,15 @@ class Workflow::Step
       object_attributes: { source: { default_branch: scm_webhook.payload[:commit_sha] } } }.to_json
   end
 
-  # TODO: Move to a query object.
-  def workflow_repositories(target_project_name, filters)
-    repositories = Project.get_by_name(target_project_name).repositories
-    return repositories unless filters.key?(:repositories)
-
-    return repositories.where(name: filters[:repositories][:only]) if filters[:repositories][:only]
-
-    return repositories.where.not(name: filters[:repositories][:ignore]) if filters[:repositories][:ignore]
-
-    repositories
-  end
-
-  # TODO: Move to a query object.
-  def workflow_architectures(repository, filters)
-    architectures = repository.architectures
-    return architectures unless filters.key?(:architectures)
-
-    return architectures.where(name: filters[:architectures][:only]) if filters[:architectures][:only]
-
-    return architectures.where.not(name: filters[:architectures][:ignore]) if filters[:architectures][:ignore]
-
-    architectures
-  end
-
-  def report_to_scm(workflow_filters)
-    workflow_repositories(target_project_name, workflow_filters).each do |repository|
-      # TODO: Fix n+1 queries
-      workflow_architectures(repository, workflow_filters).each do |architecture|
-        target_package_names.each do |target_package_name_or_flavor|
-          SCMStatusReporter.new({ project: target_project_name, package: target_package_name_or_flavor, repository: repository.name, arch: architecture.name },
-                                scm_webhook.payload, @token.scm_token).call
-        end
-      end
-    end
-  end
-
   # Only used in LinkPackageStep and BranchPackageStep.
   def validate_source_project_and_package_name
     errors.add(:base, "invalid source project '#{source_project_name}'") if step_instructions[:source_project] && !Project.valid_name?(source_project_name)
     errors.add(:base, "invalid source package '#{source_package_name}'") if step_instructions[:source_package] && !Package.valid_name?(source_package_name)
     errors.add(:base, "invalid target project '#{step_instructions[:target_project]}'") if step_instructions[:target_project] && !Project.valid_name?(step_instructions[:target_project])
+  end
+
+  def validate_project_and_package_name
+    errors.add(:base, "invalid project '#{step_instructions[:project]}'") if step_instructions[:project] && !Project.valid_name?(step_instructions[:project])
+    errors.add(:base, "invalid package '#{step_instructions[:package]}'") if step_instructions[:package] && !Package.valid_name?(step_instructions[:package])
   end
 end

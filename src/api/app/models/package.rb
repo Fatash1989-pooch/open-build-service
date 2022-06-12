@@ -71,6 +71,8 @@ class Package < ApplicationRecord
 
   after_rollback :reset_cache
 
+  has_many :watched_items, as: :watchable, dependent: :destroy
+
   # The default scope is necessary to exclude the forbidden projects.
   # It's necessary to write it as a nested Active Record query for performance reasons
   # which will produce a query like:
@@ -161,6 +163,8 @@ class Package < ApplicationRecord
 
     prj = internal_get_project(project)
     return unless prj # remote prjs
+
+    return nil if prj.scmsync.present?
 
     if pkg.nil? && opts[:follow_project_links]
       pkg = prj.find_package(package, opts[:check_update_project])
@@ -426,8 +430,9 @@ class Package < ApplicationRecord
   end
 
   def self.source_path(project, package, file = nil, opts = {})
-    path = "/source/#{URI.escape(project)}/#{URI.escape(package)}"
-    path += "/#{URI.escape(file)}" if file.present?
+    path = "/source/#{project}/#{package}"
+    path = Addressable::URI.escape(path)
+    path += "/#{ERB::Util.url_encode(file)}" if file.present?
     path += '?' + opts.to_query if opts.present?
     path
   end
@@ -590,7 +595,7 @@ class Package < ApplicationRecord
       begin
         xml = Xmlhash.parse(Backend::Connection.get(source_path(nil, view: :products)).body)
       rescue StandardError
-        return
+        next
       end
       xml.elements('productdefinition') do |pd|
         pd.elements('products') do |ps|
@@ -1322,7 +1327,7 @@ class Package < ApplicationRecord
       permitted_params = params.permit(:repository, :arch, :package, :code, :wipe)
 
       # do not use project.name because we missuse the package source container for build container operations
-      Backend::Connection.post("/build/#{URI.escape(build_project)}?cmd=#{command}&#{permitted_params.to_h.to_query}")
+      Backend::Connection.post(Addressable::URI.escape("/build/#{build_project}?cmd=#{command}&#{permitted_params.to_h.to_query}"))
     rescue Backend::Error, Timeout::Error, Project::WritePermissionError => e
       errors.add(:base, e.message)
       return false

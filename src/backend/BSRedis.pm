@@ -28,13 +28,24 @@ use POSIX;
 
 use BSRPC;
 
+use strict;
+
+my $tossl;
+
+sub import {
+  if (grep {$_ eq ':tls'} @_) {
+    require BSSSL;
+    $tossl = \&BSSSL::tossl;
+  }
+}
+
 my $tcpproto = getprotobyname('tcp');
 
 sub new {
   my ($class, %opt) = @_;
   my $self = { %opt };
   die("need to specify a redis server\n") unless $self->{'server'};
-  $self->{'port'} ||= 6379;
+  $self->{'port'} ||= $self->{'tls'} ? 6380 : 6379;
   bless $self, $class || 'BSRedis';
   return $self;
 }
@@ -42,12 +53,15 @@ sub new {
 sub connect {
   my ($self) = @_;
   return if $self->{'sock'};
-  my $hostaddr = inet_aton($self->{'server'});
+  my $hostaddr = BSRPC::lookuphost($self->{'server'}, $self->{'port'});
   die("unknown host '$self->{'server'}'\n") unless $hostaddr;
-  my $sock;
-  socket($sock, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
-  setsockopt($sock, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
-  connect($sock, sockaddr_in($self->{'port'}, $hostaddr)) || die("connect to $self->{'server'}:$self->{'port'}: $!\n");
+  my $sock = BSRPC::opensocket($hostaddr);
+  connect($sock, $hostaddr) || die("connect to $self->{'server'}:$self->{'port'}: $!\n");
+  if ($self->{'tls'}) {
+    die("tls not supported\n") unless $self->{'tossl'} || $tossl;
+    ($self->{'tossl'} || $tossl)->($sock, $self->{'ssl_keyfile'}, $self->{'certfile'}, 1, $self->{'server'});
+    BSRPC::verify_sslpeerfingerprint($sock, $self->{'sslpeerfingerprint'}) if $self->{'sslpeerfingerprint'};
+  }
   $self->{'sock'} = $sock;
   $self->{'buf'} = '';
   $self->run('AUTH', $self->{'password'}) if defined $self->{'password'};
@@ -108,6 +122,7 @@ sub recv_blob {
   my $sock = $self->{'sock'};
   die unless $sock;
   while (length($self->{'buf'}) < $len) {
+    my $r = sysread($sock, $self->{'buf'}, 4096, length($self->{'buf'}));
     if (!$r) {
       $self->close_and_die("redis: received truncated answer: $!\n") if !defined($r) && $! != POSIX::EINTR && $! != POSIX::EWOULDBLOCK;
       $self->close_and_die("redis: received truncated answer\n") if defined $r;

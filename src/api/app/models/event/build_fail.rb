@@ -4,7 +4,7 @@ module Event
 
     self.message_bus_routing_key = 'package.build_fail'
     self.description = 'Package has failed to build'
-    receiver_roles :maintainer, :bugowner, :reader, :watcher
+    receiver_roles :maintainer, :bugowner, :reader, :watcher, :package_watcher, :request_watcher
 
     create_jobs :report_to_scm_job
 
@@ -13,7 +13,7 @@ module Event
     end
 
     def expanded_payload
-      payload.merge('faillog' => faillog)
+      payload.merge('faillog' => reencode_faillog(faillog))
     end
 
     def custom_headers
@@ -43,6 +43,12 @@ module Event
     rescue Backend::Error
       nil
     end
+
+    # Reencode the fail log replacing invalid UTF-8 characters with the default unicode replacement character: '\ufffd'
+    # source: https://stackoverflow.com/a/24493972
+    def reencode_faillog(faillog)
+      faillog&.encode!('UTF-8', 'UTF-8', invalid: :replace)
+    end
   end
 end
 
@@ -50,7 +56,7 @@ end
 #
 # Table name: events
 #
-#  id          :integer          not null, primary key
+#  id          :bigint           not null, primary key
 #  eventtype   :string(255)      not null, indexed
 #  mails_sent  :boolean          default(FALSE), indexed
 #  payload     :text(65535)

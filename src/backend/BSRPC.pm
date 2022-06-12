@@ -123,7 +123,9 @@ sub createreq {
     @xhdrs = grep {!/^authorization:/i} @xhdrs;
     delete $param->{'authenticator'};
   }
-  unshift @xhdrs, "Connection: close" unless $param->{'noclose'};
+  if (!$param->{'keepalive'} || ($act ne 'GET' && $act ne 'HEAD')) {
+    unshift @xhdrs, "Connection: close" unless $param->{'noclose'};
+  }
   unshift @xhdrs, "User-Agent: $useragent" unless !defined($useragent) || grep {/^user-agent:/si} @xhdrs;
   unshift @xhdrs, "Host: $hostport" unless grep {/^host:/si} @xhdrs;
   if (defined $auth) {
@@ -187,13 +189,57 @@ sub readanswerheaderblock {
   return ($1, $ans);
 }
 
+my $ai_addrconfig = eval { Socket::AI_ADDRCONFIG() } || 0;
+
 sub lookuphost {
-  my ($host, $cache) = @_;
-  return $cache->{$host}->[0] if $cache && $cache->{$host} && $cache->{$host}->[1] > time();
-  my $hostaddr = inet_aton($host);
-  return undef unless $hostaddr;
-  $cache->{$host} = [ $hostaddr, time() + 24 * 3600 ] if $cache;
+  my ($host, $port, $cache) = @_;
+  my $hostaddr;
+  if ($cache && $cache->{$host} && $cache->{$host}->[1] > time()) {
+    $hostaddr = $cache->{$host}->[0];
+  } else {
+    if (defined &Socket::getaddrinfo) {
+      my $hints = { 'socktype' => SOCK_STREAM, 'flags' => $ai_addrconfig };
+      my ($err, @ai) = Socket::getaddrinfo($host, undef, $hints);
+      return undef if $err;
+      my @aif = grep {$_->{'family'} == AF_INET} @ai;
+      @aif = grep {$_->{'family'} == AF_INET6} @ai unless @aif;
+      $hostaddr = $aif[0]->{'addr'} if @aif;
+    } else {
+      $hostaddr = inet_aton($host);
+      $hostaddr = sockaddr_in(0, $hostaddr) if $hostaddr;
+    }
+    return undef unless $hostaddr;
+    $cache->{$host} = [ $hostaddr, time() + 24 * 3600 ] if $cache;
+  }
+  if (defined($port)) {
+    if (sockaddr_family($hostaddr) == AF_INET6) {
+      (undef, $hostaddr) = sockaddr_in6($hostaddr);
+      $hostaddr = sockaddr_in6($port, $hostaddr);
+    } else {
+      (undef, $hostaddr) = sockaddr_in($hostaddr);
+      $hostaddr = sockaddr_in($port, $hostaddr);
+    }
+  }
   return $hostaddr;
+}
+
+sub opensocket {
+  my ($hostaddr) = @_;
+  my $sock;
+  if (sockaddr_family($hostaddr) == AF_INET6) {
+    socket($sock, PF_INET6, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
+  } else {
+    socket($sock, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
+  }
+  setsockopt($sock, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
+  return $sock;
+}
+
+sub verify_sslpeerfingerprint {
+  my ($sock, $sslfingerprint) = @_;
+  die("bad sslpeerfingerprint '$sslfingerprint'\n") unless $sslfingerprint =~ /^(.*?):(.*)$/s;
+  my $pfp =  tied(*{$sock})->peerfingerprint($1);
+  die("peer fingerprint does not match: $2 != $pfp\n") if $2 ne $pfp;
 }
 
 #
@@ -293,26 +339,37 @@ sub rpc {
   }
 
   # connect to server
+  my $keepalive;
+  my $keepalivecookie;
   my $sock;
   if (exists($param->{'socket'})) {
     $sock = $param->{'socket'};
   } else {
-    my $hostaddr = lookuphost($host, \%hostlookupcache);
+    my $hostaddr = lookuphost($host, $port, \%hostlookupcache);
     die("unknown host '$host'\n") unless $hostaddr;
-    socket($sock, PF_INET, SOCK_STREAM, $tcpproto) || die("socket: $!\n");
-    setsockopt($sock, SOL_SOCKET, SO_KEEPALIVE, pack("l",1));
-    connect($sock, sockaddr_in($port, $hostaddr)) || die("connect to $host:$port: $!\n");
-    if ($proxytunnel) {
-      BSHTTP::swrite($sock, $proxytunnel);
-      my ($status, $ans) = readanswerheaderblock($sock);
-      die("proxy tunnel: CONNECT method failed: $status\n") unless $status =~ /^200[^\d]/;
+    $keepalive = $param->{'keepalive'};
+    $keepalivecookie = "$hostaddr/".($proxytunnel || '');
+    if (!$param->{'continuation'} && $keepalive && $keepalive->{'socket'}) {
+      my $request = $param->{'request'} || 'GET';
+      if ($keepalive->{'cookie'} eq $keepalivecookie && ($request eq 'GET' || $request eq 'HEAD')) {
+	$sock = $keepalive->{'socket'};
+        verify_sslpeerfingerprint($sock, $param->{'sslpeerfingerprint'}) if $param->{'sslpeerfingerprint'} && ($proto eq 'https' || $proxytunnel);
+      } else {
+	close($keepalive->{'socket'});
+	%$keepalive = ();
+      }
     }
-    if ($proto eq 'https' || $proxytunnel) {
-      ($param->{'https'} || $tossl)->($sock, $param->{'ssl_keyfile'}, $param->{'ssl_certfile'}, 1, $host);
-      if ($param->{'sslpeerfingerprint'}) {
-	die("bad sslpeerfingerprint '$param->{'sslpeerfingerprint'}'\n") unless $param->{'sslpeerfingerprint'} =~ /^(.*?):(.*)$/s;
-	my $pfp =  tied(*{$sock})->peerfingerprint($1);
-	die("peer fingerprint does not match: $2 != $pfp\n") if $2 ne $pfp;
+    if (!$sock) {
+      $sock = opensocket($hostaddr);
+      connect($sock, $hostaddr) || die("connect to $host:$port: $!\n");
+      if ($proxytunnel) {
+        BSHTTP::swrite($sock, $proxytunnel);
+        my ($status, $ans) = readanswerheaderblock($sock);
+        die("proxy tunnel: CONNECT method failed: $status\n") unless $status =~ /^200[^\d]/;
+      }
+      if ($proto eq 'https' || $proxytunnel) {
+        ($param->{'https'} || $tossl)->($sock, $param->{'ssl_keyfile'}, $param->{'ssl_certfile'}, 1, $host);
+        verify_sslpeerfingerprint($sock, $param->{'sslpeerfingerprint'}) if $param->{'sslpeerfingerprint'};
       }
     }
   }
@@ -340,7 +397,7 @@ sub rpc {
     } else {
       BSHTTP::swrite($sock, $req);
       while(1) {
-	$req = &$data($param, $sock);
+	$req = $data->($param, $sock);
 	last if !defined($req) || !length($req);
         BSHTTP::swrite($sock, $req, $chunked);
       }
@@ -374,6 +431,11 @@ sub rpc {
   my %headers;
   BSHTTP::gethead(\%headers, $headers);
 
+  # no keepalive if the server says so
+  %$keepalive = () if $keepalive;
+  undef $keepalive if lc($headers{'connection'} || '') eq 'close';
+  undef $keepalive if !defined($headers{'content-length'}) && lc($headers{'transfer-encoding'} || '') ne 'chunked';
+
   # process header
   #
   # HTTP Status Code Definitions
@@ -390,6 +452,7 @@ sub rpc {
     #}
     if ($status =~ /^30[27][^\d]/ && ($param->{'ignorestatus'} || 0) != 2) {
       close $sock;
+      %$keepalive = () if $keepalive;
       die("error: no redirects allowed\n") unless defined $param->{'maxredirects'};
       die("error: status 302 but no 'location' header found\n") unless exists $headers{'location'};
       die("error: max number of redirects reached\n") if $param->{'maxredirects'} < 1;
@@ -405,6 +468,7 @@ sub rpc {
       my $auth = $param->{'authenticator'}->($param, $headers{'www-authenticate'}, \%headers);
       if ($auth) {
         close $sock;
+        %$keepalive = () if $keepalive;
         my %myparam = %$param;
         delete $myparam{'authenticator'};
         $myparam{'headers'} = [ grep {!/^authorization:/i} @{$myparam{'headers'} || []} ];
@@ -414,6 +478,7 @@ sub rpc {
     }
     if (!$param->{'ignorestatus'}) {
       close $sock;
+      %$keepalive = () if $keepalive;
       die("$1 remote error: $2 ($uri)\n") if $status =~ /^(\d+) +(.*?)$/;
       die("remote error: $status\n");
     }
@@ -428,8 +493,13 @@ sub rpc {
     '__data' => $ans,
   };
   if (($param->{'request'} || 'GET') eq 'HEAD') {
-    close $sock;
-    undef $sock;
+    if ($keepalive) {
+      $keepalive->{'socket'} = $sock;
+      $keepalive->{'cookie'} = $keepalivecookie;
+    } else {
+      close $sock;
+      undef $sock;
+    }
     return \%headers unless $param->{'receiver'};
     delete $ansreq->{'__socket'};
     delete $ansreq->{'__data'};
@@ -443,7 +513,12 @@ sub rpc {
   } else {
     $ans = BSHTTP::read_data($ansreq, undef, 1);
   }
-  close $sock if $sock;
+  if ($keepalive && $sock) {
+    $keepalive->{'socket'} = $sock;
+    $keepalive->{'cookie'} = $keepalivecookie;
+  } else {
+    close $sock if $sock;
+  }
 
   #if ($param->{'verbose'}) {
   #  print "< $ans\n";

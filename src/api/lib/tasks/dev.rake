@@ -3,8 +3,6 @@
 require 'fileutils'
 require 'yaml'
 
-ENABLED_FEATURE_FLAGS = [:notifications_redesign, :trigger_workflow].freeze
-
 namespace :dev do
   task :prepare do
     puts 'Setting up the database configuration...'
@@ -54,14 +52,10 @@ namespace :dev do
       puts 'Configure default signing'
       Rake::Task['assets:clobber'].invoke
       ::Configuration.update(enforce_project_keys: true)
-      # Enable all feature flags for all beta users in the development environment to easily join the beta and test changes
-      # related to feature flags while also being able to test changes for non-beta users, so without any feature flag enabled
-      ENABLED_FEATURE_FLAGS.each do |feature_flag|
-        puts "Enabling feature flag #{feature_flag} for all beta users"
-        Flipper.disable(feature_flag) # making sure we are starting from a clean state since the database is not overwritten if already present
-        Flipper.enable(feature_flag, :beta)
-      end
     end
+
+    puts 'Enable feature toggles for their group'
+    Rake::Task['flipper:enable_features_for_group'].invoke
   end
 
   desc 'Run all linters we use'
@@ -110,10 +104,10 @@ namespace :dev do
       end
 
       desc 'Autocorrect rubocop offenses in rails and in root'
-      task :auto_correct do
-        sh 'rubocop --auto-correct --ignore_parent_exclusion'
+      task :autocorrect do
+        sh 'rubocop --autocorrect --ignore_parent_exclusion'
         Dir.chdir('../..') do
-          sh 'rubocop --auto-correct'
+          sh 'rubocop --autocorrect'
         end
       end
     end
@@ -123,7 +117,7 @@ namespace :dev do
     end
     desc 'Run apidocs linter'
     task :apidocs do
-      sh 'find public/apidocs-new -name  \'*.yaml\' | xargs -P8 -I % ruby -e "require \'yaml\'; YAML.load_file \'%\'"'
+      sh 'find public/apidocs-new -name  \'*.yaml\' | xargs -P8 -I % ruby -e "require \'yaml\'; YAML.load_file(\'%\',  permitted_classes: [Time])"'
     end
   end
 
@@ -193,7 +187,7 @@ namespace :dev do
 
       # Users
       admin = User.where(login: 'Admin').first || create(:admin_user, login: 'Admin')
-      group = create(:groups_user, user: admin, group: create(:group, title: Faker::Creature::Cat.name)).group
+      group = create(:groups_user, user: admin, group: create(:group, title: Faker::Lorem.word)).group
       subscribe_to_all_notifications(admin)
       requestor = User.where(login: 'Requestor').first || create(:confirmed_user, login: 'Requestor')
       User.session = requestor
@@ -267,16 +261,16 @@ namespace :dev do
       Rails.cache.clear
       Rake::Task['db:reset'].invoke
 
-      # Enable all the feature flags for all logged-in and not-logged-in users in development env.
-      ENABLED_FEATURE_FLAGS.each do |feature_flag|
-        Flipper[feature_flag].enable
-      end
+      puts 'Enable feature toggles for their group'
+      Rake::Task['flipper:enable_features_for_group'].invoke
 
       iggy = create(:confirmed_user, login: 'Iggy')
       admin = User.get_default_admin
       User.session = admin
 
-      interconnect = create(:project, name: 'openSUSE.org', remoteurl: 'https://api.opensuse.org/public')
+      interconnect = create(:remote_project, name: 'openSUSE.org', remoteurl: 'https://api.opensuse.org/public')
+      # The interconnect doesn't work unless we set the distributions
+      FetchRemoteDistributionsJob.perform_now
       tw_repository = create(:repository, name: 'snapshot', project: interconnect, remote_project_name: 'openSUSE:Factory')
 
       # the home:admin is not created because the Admin user is created in seeds.rb
@@ -304,7 +298,7 @@ namespace :dev do
 
       leap = create(:project, name: 'openSUSE:Leap:15.0')
       leap_apache = create(:package_with_file, name: 'apache2', project: leap)
-      leap_repository = create(:repository, project: leap, name: 'openSUSE_Tumbleweed')
+      leap_repository = create(:repository, project: leap, name: 'openSUSE_Tumbleweed', architectures: ['x86_64'])
       create(:path_element, link: tw_repository, repository: leap_repository)
 
       # we need to set the user again because some factories set the user back to nil :(
@@ -395,11 +389,20 @@ namespace :dev do
       Configuration.download_url = 'https://download.opensuse.org'
       Configuration.save
 
+      # Other special projects and packages
+      create(:project, name: 'linked_project', link_to: home_admin)
+      create(:multibuild_package, project: home_admin, name: 'multibuild_package')
+      create(:package_with_link, project: home_admin, name: 'linked_package')
+      create(:package_with_remote_link, project: home_admin, name: 'remotely_linked_package', remote_project_name: 'openSUSE.org:openSUSE:Factory', remote_package_name: 'aaa_base')
+
       # Trigger package builds for home:admin
       home_admin.store
 
       # Create notifications by running the `dev:notifications:data` task two times
       Rake::Task['dev:notifications:data'].invoke(2)
+
+      # Create a workflow token, some workflow runs and their related data
+      Rake::Task['workflows:create_workflow_runs'].invoke
     end
   end
 end
@@ -437,6 +440,14 @@ def create_and_assign_project(project_name, user)
   end
 end
 
+def find_or_create_project(project_name, user)
+  project = Project.joins(:relationships)
+                   .where(projects: { name: project_name }, relationships: { user: user }).first
+  return project if project
+
+  create_and_assign_project(project_name, user)
+end
+
 def subscribe_to_all_notifications(user)
   create(:event_subscription_request_created, channel: :web, user: user, receiver_role: 'target_maintainer')
   create(:event_subscription_review_wanted, channel: 'web', user: user, receiver_role: 'reviewer')
@@ -445,6 +456,8 @@ def subscribe_to_all_notifications(user)
   create(:event_subscription_comment_for_project, channel: :web, user: user, receiver_role: 'maintainer')
   create(:event_subscription_comment_for_package, channel: :web, user: user, receiver_role: 'maintainer')
   create(:event_subscription_comment_for_request, channel: :web, user: user, receiver_role: 'target_maintainer')
+  create(:event_subscription_relationship_create, channel: :web, user: user, receiver_role: 'any_role')
+  create(:event_subscription_relationship_delete, channel: :web, user: user, receiver_role: 'any_role')
 
   user.groups.each do |group|
     create(:event_subscription_request_created, channel: :web, user: nil, group: group, receiver_role: 'target_maintainer')
@@ -454,5 +467,7 @@ def subscribe_to_all_notifications(user)
     create(:event_subscription_comment_for_project, channel: :web, user: nil, group: group, receiver_role: 'maintainer')
     create(:event_subscription_comment_for_package, channel: :web, user: nil, group: group, receiver_role: 'maintainer')
     create(:event_subscription_comment_for_request, channel: :web, user: nil, group: group, receiver_role: 'target_maintainer')
+    create(:event_subscription_relationship_create, channel: :web, user: nil, group: group, receiver_role: 'any_role')
+    create(:event_subscription_relationship_delete, channel: :web, user: nil, group: group, receiver_role: 'any_role')
   end
 end

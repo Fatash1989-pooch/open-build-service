@@ -65,4 +65,35 @@ RSpec.describe Notification do
       it { expect(subject).to be_truthy }
     end
   end
+
+  describe 'Instrumentation' do
+    let!(:test_user) { create(:confirmed_user, login: 'foo') }
+    let!(:web_notification) { create(:web_notification, subscriber: test_user) }
+
+    before do
+      allow(RabbitmqBus).to receive(:send_to_bus).with('metrics', 'notification,action=read value=1')
+    end
+
+    context 'if delivered change, we should track it' do
+      before do
+        web_notification.delivered = true
+      end
+
+      it do
+        web_notification.save
+        expect(RabbitmqBus).to have_received(:send_to_bus).with('metrics', 'notification,action=read value=1')
+      end
+    end
+
+    context 'if delivered does not change, we should not track it' do
+      before do
+        web_notification.title = 'FOO FOO'
+      end
+
+      it do
+        web_notification.save
+        expect(RabbitmqBus).not_to have_received(:send_to_bus).with('metrics', 'notification,action=read value=1')
+      end
+    end
+  end
 end

@@ -29,6 +29,9 @@ BEGIN {
     $param = {'uri' => $param} if ref($param) ne 'HASH';
     my $uri = $param->{'uri'};
 
+    # Exclude `now`
+    @args = grep {!/^now=/} @args;
+
     for (@args) {
       $_ = BSRPC::urlencode($_);
       s/%3D/=/;
@@ -57,7 +60,7 @@ BEGIN {
 
       my $receiver = $param->{'receiver'};
       if ($receiver) {
-	$ret = $receiver->(BSHTTP::str2req($ret), $param, $xmlargs || $param->{'receiverarg'}) if $receiver;
+        $ret = $receiver->(BSHTTP::str2req($ret), $param, $xmlargs || $param->{'receiverarg'});
       } elsif ($xmlargs) {
 	$ret = BSUtil::fromxml($ret, $xmlargs);
       }

@@ -5,11 +5,15 @@ module NotificationService
                         'Event::ReviewWanted',
                         'Event::CommentForProject',
                         'Event::CommentForPackage',
-                        'Event::CommentForRequest'].freeze
+                        'Event::CommentForRequest',
+                        'Event::RelationshipCreate',
+                        'Event::RelationshipDelete'].freeze
     CHANNELS = [:web, :rss].freeze
     ALLOWED_NOTIFIABLE_TYPES = {
       'BsRequest' => ::BsRequest,
-      'Comment' => ::Comment
+      'Comment' => ::Comment,
+      'Project' => ::Project,
+      'Package' => ::Package
     }.freeze
     ALLOWED_CHANNELS = {
       web: NotificationService::WebChannel,
@@ -28,8 +32,6 @@ module NotificationService
           create_notification_per_subscription(subscription, channel)
         end
       end
-    rescue StandardError => e
-      Airbrake.notify(e, event_id: @event.id)
     end
 
     private

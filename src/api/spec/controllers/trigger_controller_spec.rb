@@ -26,6 +26,7 @@ RSpec.describe TriggerController, vcr: true do
       end
 
       it { expect(response).to have_http_status(:forbidden) }
+      it { expect(response.body).to include('No valid token') }
     end
 
     context 'when token is valid' do
@@ -182,6 +183,19 @@ RSpec.describe TriggerController, vcr: true do
       let(:signature_header_name) { 'HTTP_X-Pagure-Signature-256' }
 
       it_behaves_like 'it verifies the signature'
+    end
+
+    context 'when some parameters are not strings' do
+      before do
+        request.headers['ACCEPT'] = '*/*'
+        request.headers['CONTENT_TYPE'] = 'application/json'
+        request.headers['HTTP_X_OBS_SIGNATURE'] = signature
+        post :create, body: { a_hash: { integer1: 123 }, integer2: 456 }.to_json
+      end
+
+      it 'still processes the request without validating parameters' do
+        expect(response).to have_http_status(:success)
+      end
     end
   end
 end

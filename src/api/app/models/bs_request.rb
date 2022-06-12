@@ -81,6 +81,7 @@ class BsRequest < ApplicationRecord
   has_one :request_exclusion, class_name: 'Staging::RequestExclusion', dependent: :destroy
   has_many :not_accepted_reviews, -> { where.not(state: :accepted) }, class_name: 'Review'
   has_many :notifications, as: :notifiable, dependent: :delete_all
+  has_many :watched_items, as: :watchable, dependent: :destroy
 
   validates :state, inclusion: { in: VALID_REQUEST_STATES }
   validates :creator, presence: true
@@ -1192,14 +1193,13 @@ class BsRequest < ApplicationRecord
       review_comment += "review for group #{opts[:by_group]}" if opts[:by_group]
       review_comment += "review for project #{opts[:by_project]}" if opts[:by_project]
       review_comment += "review for package #{opts[:by_project]} / #{opts[:by_package]}" if opts[:by_package]
-      history_class.create(review: review, comment: "review assigend to user #{reviewer.login}", user_id: User.session!.id)
+      history_class.create(review: review, comment: "review assigned to user #{reviewer.login}", user_id: User.session!.id)
     end
     raise Review::NotFoundError unless review_comment
 
     review_comment
   end
 
-  # TODO: Once the feature flag notifications_redesign is removed, remove this method if we decide to delete the "Tasks" page.
   def update_cache
     target_package_ids = bs_request_actions.with_target_package.pluck(:target_package_id)
     target_project_ids = bs_request_actions.with_target_project.pluck(:target_project_id)

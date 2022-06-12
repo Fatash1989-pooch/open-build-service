@@ -79,6 +79,8 @@ sub deamonize {
   $| = 1; # flush all output immediately
 }
 
+my $ai_addrconfig = eval { Socket::AI_ADDRCONFIG() } || 0;
+
 sub serveropen {
   # creates master socket
   # 512 connections in the queue maximum
@@ -88,7 +90,7 @@ sub serveropen {
   #     other string           - tcp socket on $port (assumes it is a number)
   # $user, $group:
   #     if defined, try to set appropriate UID, EUID, GID, EGID ( $<, $>, $(, $) )
-  my ($port, $user, $group) = @_;
+  my ($port, $user, $group, $family) = @_;
   # check if $user and $group exist on this system
   my $tcpproto = getprotobyname('tcp');
   my @ports;
@@ -97,11 +99,27 @@ sub serveropen {
   } else {
     @ports = split(',', $port, 2);
   }
+
+  # check if we should do ipv6
+  if (!defined($family) && $ai_addrconfig && grep {ref($_) || !/^&/} @ports) {
+    my ($err, @ai) = Socket::getaddrinfo("", 0, { 'socktype' => SOCK_STREAM, 'flags' => $ai_addrconfig });
+    $family = AF_INET6 if grep {$_->{'family'} == AF_INET6} @ai;
+  }
+
   my @sock;
   for $port (@ports) {
     my $s;
     if (!ref($port) && $port =~ /^&/) {
       open($s, "<$port") || die("socket open: $!\n");
+    } elsif ($family && $family == AF_INET6) {
+      socket($s , PF_INET6, SOCK_STREAM, $tcpproto) || die "socket: $!\n";
+      setsockopt($s, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
+      if (ref($port)) {
+        bind($s, sockaddr_in6(0, Socket::IN6ADDR_ANY())) || die "bind: $!\n";
+        ($$port) = sockaddr_in6(getsockname($s));
+      } else {
+        bind($s, sockaddr_in6($port, Socket::IN6ADDR_ANY())) || die "bind: $!\n";
+      }
     } else {
       socket($s , PF_INET, SOCK_STREAM, $tcpproto) || die "socket: $!\n";
       setsockopt($s, SOL_SOCKET, SO_REUSEADDR, pack("l",1));
@@ -187,15 +205,7 @@ sub setsocket {
     return;
   }
   $req->{'__socket'} = $_[0];
-  eval {
-    my $peername = getpeername($req->{'__socket'});
-    if ($peername) {
-      my ($peerport, $peera);
-      ($peerport, $peera) = sockaddr_in($peername);
-      $req->{'peerport'} = $peerport;
-      $req->{'peer'} = inet_ntoa($peera);
-    }
-  }
+  eval { ($req->{'peerport'}, $req->{'peer'}) = getpeerdata($req) };
 }
 
 sub setstatus {
@@ -423,11 +433,8 @@ sub server {
     }
   }
   $BSServer::request = $req;
-  eval {
-    my ($peerport, $peera) = sockaddr_in($peeraddr);
-    $req->{'peerport'} = $peerport;
-    $req->{'peer'} = inet_ntoa($peera);
-  };
+  eval { ($req->{'peerport'}, $req->{'peer'}) = getpeerdata($req, $peeraddr) };
+  warn($@) if $@;
 
   setsockopt($clnt, SOL_SOCKET, SO_KEEPALIVE, pack("l",1)) if $conf->{'setkeepalive'};
 
@@ -601,10 +608,22 @@ sub done {
 }
 
 sub getpeerdata {
-  my $req = $BSServer::request || {};
-  return (undef, undef) unless defined $req->{'__socket'};
-  my $peername = getpeername($req->{'__socket'});
-  return (undef, undef) unless $peername;
+  my ($req, $peername) = @_;
+  if (!$peername) {
+    $req ||= $BSServer::request || {};
+    return (undef, undef) unless defined $req->{'__socket'};
+    $peername = getpeername($req->{'__socket'});
+    return (undef, undef) unless $peername;
+  }
+  if (sockaddr_family($peername) == AF_INET6) {
+    my ($port, $addr) = sockaddr_in6($peername);
+    # support decoding of mapped ipv4 addresses
+    if ($addr && substr($addr, 0, 12) eq "\0\0\0\0\0\0\0\0\0\0\377\377") {
+      return ($port, inet_ntoa(substr($addr, 12, 4)));
+    }
+    $addr = Socket::inet_ntop(AF_INET6, $addr) if $addr;
+    return ($port, $addr);
+  }
   my ($port, $addr) = sockaddr_in($peername);
   $addr = inet_ntoa($addr) if $addr;
   return ($port, $addr);

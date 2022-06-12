@@ -68,6 +68,14 @@ class Webui::PackageController < Webui::WebuiController
   end
 
   def show
+    # FIXME: Remove this statement when scmsync is fully supported
+    if @project.scmsync.present?
+      flash[:error] = "Package sources for project #{@project.name} are received through scmsync.
+                       This is not yet fully supported by the OBS frontend"
+      redirect_back(fallback_location: project_show_path(@project))
+      return
+    end
+
     if @spider_bot
       params.delete(:rev)
       params.delete(:srcmd5)
@@ -105,7 +113,10 @@ class Webui::PackageController < Webui::WebuiController
     @comments = @package.comments.includes(:user)
     @comment = Comment.new
 
-    @current_notification = NotificationsFinder.new.for_subscribed_user_by_id(params[:notification_id])
+    if User.session && params[:notification_id]
+      @current_notification = Notification.find(params[:notification_id])
+      authorize @current_notification, :update?, policy_class: NotificationPolicy
+    end
 
     @services = @files.any? { |file| file[:name] == '_service' }
 
@@ -425,8 +436,8 @@ class Webui::PackageController < Webui::WebuiController
     end
 
     @offset = 0
-    @status = get_status(@project, @package, @repo, @arch)
-    @what_depends_on = Package.what_depends_on(@project, @package, @repo, @arch)
+    @status = get_status(@project, @package_name, @repo, @arch)
+    @what_depends_on = Package.what_depends_on(@project, @package_name, @repo, @arch)
     @finished = Buildresult.final_status?(status)
 
     set_job_status
@@ -450,9 +461,9 @@ class Webui::PackageController < Webui::WebuiController
       @maxsize = 1024 * 64
       @first_request = params[:initial] == '1'
       @offset = params[:offset].to_i
-      @status = get_status(@project, @package, @repo, @arch)
+      @status = get_status(@project, @package_name, @repo, @arch)
       @finished = Buildresult.final_status?(@status)
-      @size = get_size_of_log(@project, @package, @repo, @arch)
+      @size = get_size_of_log(@project, @package_name, @repo, @arch)
 
       chunk_start = @offset
       chunk_end = @offset + @maxsize
@@ -463,12 +474,7 @@ class Webui::PackageController < Webui::WebuiController
         chunk_end = @size
       end
 
-      @log_chunk = get_log_chunk(@project, @package, @repo, @arch, chunk_start, chunk_end)
-      # retry the last chunk again, because build compare overwrites last log lines
-      if @log_chunk.length.zero? && !@first_request && !@finished
-        @log_chunk = get_log_chunk(@project, @package, @repo, @arch, chunk_start, chunk_end)
-        @finished = true
-      end
+      @log_chunk = get_log_chunk(@project, @package_name, @repo, @arch, chunk_start, chunk_end)
 
       old_offset = @offset
       @offset = [chunk_end, @size].min
@@ -487,8 +493,6 @@ class Webui::PackageController < Webui::WebuiController
         @finished = true
       end
     end
-
-    logger.debug 'finished ' + @finished.to_s
   end
 
   def abort_build
@@ -690,22 +694,22 @@ class Webui::PackageController < Webui::WebuiController
   # Thus before giving access to the build log, we need to ensure user has source access
   # rights.
   #
-  # This before_filter checks source permissions for packages that belong to remote projects,
+  # This before_filter checks source permissions for packages that belong
   # to local projects and local projects that link to other project's packages.
   #
   # If the check succeeds it sets @project and @package variables.
   def check_build_log_access
-    if ::Project.exists_by_name(params[:project])
-      @project = ::Project.get_by_name(params[:project])
-    else
+    @project = Project.find_by(name: params[:project])
+    unless @project
       redirect_to root_path, error: "Couldn't find project '#{params[:project]}'. Are you sure it still exists?"
       return false
     end
 
+    @package_name = params[:package]
     begin
-      @package = Package.get_by_project_and_name(@project, params[:package], use_source: false,
-                                                                             follow_multibuild: true,
-                                                                             follow_project_links: true)
+      @package = Package.get_by_project_and_name(@project, @package_name, use_source: false,
+                                                                          follow_multibuild: true,
+                                                                          follow_project_links: true)
     rescue Package::UnknownObjectError
       redirect_to project_show_path(@project.to_param),
                   error: "Couldn't find package '#{params[:package]}' in " \
@@ -713,17 +717,16 @@ class Webui::PackageController < Webui::WebuiController
       return false
     end
 
-    # package is nil for remote projects
-    if @package && !@package.check_source_access?
-      redirect_to package_show_path(project: @project.name, package: @package.name),
+    # NOTE: @package is a String for multibuild packages
+    @package = Package.find_by_project_and_name(@project.name, Package.striping_multibuild_suffix(@package_name)) if @package.is_a?(String)
+
+    unless @package.check_source_access?
+      redirect_to package_show_path(project: @project.name, package: @package_name),
                   error: 'Could not access build log'
       return false
     end
 
     @can_modify = User.possibly_nobody.can_modify?(@project) || User.possibly_nobody.can_modify?(@package)
-
-    # for remote and multibuild / local link packages
-    @package = params[:package] if @package.try(:name) != params[:package]
 
     true
   end
@@ -884,7 +887,7 @@ class Webui::PackageController < Webui::WebuiController
     @percent = nil
 
     begin
-      jobstatus = get_job_status(@project, @package, @repo, @arch)
+      jobstatus = get_job_status(@project, @package_name, @repo, @arch)
       if jobstatus.present?
         js = Xmlhash.parse(jobstatus)
         @workerid = js.get('workerid')

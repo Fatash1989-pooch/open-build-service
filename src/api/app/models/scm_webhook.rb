@@ -1,6 +1,7 @@
 # Contains the payload extracted from a SCM webhook and provides helper methods to know which webhook event we're dealing with
 class ScmWebhook
   include ActiveModel::Model
+  include ScmWebhookInstrumentation # for run_callbacks
 
   attr_accessor :payload
 
@@ -10,11 +11,15 @@ class ScmWebhook
                                   'edited', 'labeled', 'locked', 'ready_for_review', 'review_request_removed',
                                   'review_requested', 'unassigned', 'unlabeled', 'unlocked'].freeze
   IGNORED_MERGE_REQUEST_ACTIONS = ['approved', 'unapproved'].freeze
+  ALLOWED_PULL_REQUEST_ACTIONS = ['closed', 'opened', 'reopened', 'synchronize'].freeze
+  ALLOWED_MERGE_REQUEST_ACTIONS = ['close', 'merge', 'open', 'reopen', 'update'].freeze
 
   def initialize(attributes = {})
-    super
-    # To safely navigate the hash and compare keys
-    @payload = attributes[:payload].deep_symbolize_keys
+    run_callbacks(:initialize) do
+      super
+      # To safely navigate the hash and compare keys
+      @payload = attributes[:payload].deep_symbolize_keys
+    end
   end
 
   def new_pull_request?

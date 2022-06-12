@@ -73,6 +73,9 @@ fi
 if [ -n "$OBS_WORKER_WIPE_AFTER_BUILD" ]; then
     OBS_WIPE_AFTER_BUILD="--wipeafterbuild"
 fi
+if [ -n "$OBS_WORKER_USE_MKFS_COPYIN" ]; then
+    OBS_WORKER_USE_MKFS_COPYIN="--vm-use-mkfs-copyin"
+fi
 
 if [ -n "$OBS_WORKER_SECURITY_LEVEL" ]; then
     OBS_WORKER_HOSTLABELS="OBS_WORKER_SECURITY_LEVEL_${OBS_WORKER_SECURITY_LEVEL} $OBS_WORKER_HOSTLABELS"
@@ -132,6 +135,10 @@ if [ -n "$OBS_VM_TYPE" -a "$OBS_VM_TYPE" != "auto" ] ; then
         options=(${OBS_VM_TYPE//:/ })
         ARCH="--arch ${options[1]}"
         [ -n "${options[2]}" ] && EMULATOR="--emulator-script ${options[2]}"
+    elif [ "${OBS_VM_TYPE#qemu:}" != "$OBS_VM_TYPE" ] ; then
+        vmopt="--vm-type qemu"
+        options=(${OBS_VM_TYPE//:/ })
+        ARCH="--arch ${options[1]}"
     elif [ "$OBS_VM_TYPE" != "none" ] ; then
         vmopt="--$OBS_VM_TYPE"
     fi
@@ -156,7 +163,7 @@ if [ "$OBS_VM_TYPE" = "zvm" ]; then
     fi
 fi
 
-if [ "$OBS_VM_TYPE" = "xen" -o "$OBS_VM_TYPE" = "kvm" -o "${OBS_VM_TYPE#emulator:}" != "$OBS_VM_TYPE" ] ; then
+if [ "$OBS_VM_TYPE" = "xen" -o "$OBS_VM_TYPE" = "kvm" -o "${OBS_VM_TYPE#qemu:}" != "$OBS_VM_TYPE" -o "${OBS_VM_TYPE#emulator:}" != "$OBS_VM_TYPE" ] ; then
     # we start up in VM mode, check for the worker disk options
     if [ -n "$OBS_VM_DISK_AUTOSETUP_ROOT_FILESIZE" ]; then
         VMDISK_ROOT_FILESIZE="--vmdisk-rootsize ${OBS_VM_DISK_AUTOSETUP_ROOT_FILESIZE}"
@@ -354,6 +361,7 @@ case "$1" in
         elif [ "--zvm" == "$vmopt" ]; then echo "z/VM virtual machine"
         elif [ "--pvm" == "$vmopt" ]; then echo "PowerVM LPAR"
         elif [ "--emulator" == "$vmopt" ]; then echo "System emulated virtual machine"
+        elif [ "--vm-type qemu" == "$vmopt" ]; then echo "System emulated virtual machine via QEMU"
         elif [ "--lxc" == "$vmopt" ]; then echo "LXC container"
         elif [ "openstack" == "$OBS_VM_TYPE" ]; then echo "OpenStack virtual machine"
         else  echo "chroot"
@@ -411,7 +419,7 @@ case "$1" in
             mkdir -p $R
             # prepare obsworker startup in screen...
             TMPFS=
-            if [ "$OBS_VM_TYPE" = "xen" -o "$OBS_VM_TYPE" = "kvm" -o "${OBS_VM_TYPE#emulator:}" != "$OBS_VM_TYPE" ] ; then
+            if [ "$OBS_VM_TYPE" = "xen" -o "$OBS_VM_TYPE" = "kvm" -o "${OBS_VM_TYPE#qemu:}" != "$OBS_VM_TYPE" -o "${OBS_VM_TYPE#emulator:}" != "$OBS_VM_TYPE" ] ; then
                 DEVICE="$OBS_WORKER_DIRECTORY/root_$I/root"
                 SWAP="$OBS_WORKER_DIRECTORY/root_$I/swap"
                 if [ -n "$OBS_VM_DISK_AUTOSETUP_ROOT_FILESIZE" ]; then
@@ -457,7 +465,7 @@ case "$1" in
             echo "screen -t $WORKERID nice -n $OBS_NICE ./bs_worker --hardstatus $vmopt $port --root $R" \
                 "--statedir $workerdir/$I --id $WORKERID $REPO_PARAM $HUGETLBFS $HOSTLABELS" \
                 "$HOSTOWNER $OBS_JOBS $OBS_THREADS $OBS_TEST $OBS_WORKER_OPT $TMPFS $DEVICE $SWAP $MEMORY" \
-                "$OBS_CLEANUP_CHROOT $OBS_WIPE_AFTER_BUILD $ARCH $EMULATOR" \
+                "$OBS_CLEANUP_CHROOT $OBS_WIPE_AFTER_BUILD $OBS_WORKER_USE_MKFS_COPYIN $ARCH $EMULATOR" \
                 >> $screenrc
             mkdir -p $workerdir/$I
         done

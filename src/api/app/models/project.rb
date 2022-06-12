@@ -55,6 +55,8 @@ class Project < ApplicationRecord
   has_many :linked_repositories, through: :path_elements, source: :link, foreign_key: :repository_id
   has_many :repository_architectures, -> { order('position') }, through: :repositories
 
+  has_many :watched_items, as: :watchable, dependent: :destroy
+  # FIXME: We will remove the following association when new_watchlist goes out of beta
   has_many :watched_projects, dependent: :destroy, inverse_of: :project
 
   has_many :flags, dependent: :delete_all, inverse_of: :project
@@ -307,8 +309,9 @@ class Project < ApplicationRecord
     end
 
     def source_path(project, file = nil, opts = {})
-      path = "/source/#{URI.escape(project)}"
-      path += "/#{URI.escape(file)}" if file.present?
+      path = "/source/#{project}"
+      path = Addressable::URI.escape(path)
+      path += "/#{CGI.escape(file)}" if file.present?
       path += '?' + opts.to_query if opts.present?
       path
     end
@@ -489,7 +492,7 @@ class Project < ApplicationRecord
       request.bs_request_actions.each do |action|
         if action.source_project == name
           begin
-            request.change_state(newstate: 'revoked', comment: "The source project '#{name}' has been removed")
+            request.change_state(newstate: 'revoked', comment: "The source project '#{name}' has been removed", override_creator: request.creator)
           rescue PostRequestNoPermission
             logger.debug "#{User.session!.login} tried to revoke request #{request.number} but had no permissions"
           end
@@ -1143,33 +1146,27 @@ class Project < ApplicationRecord
 
   # called either directly or from delayed job
   def do_project_release(params)
-    User.session ||= User.find_by!(login: params[:user])
+    User.find_by!(login: params[:user]).run_as do
+      comment = "Project release by #{User.session.login}"
 
-    comment = "Project release by #{User.session.login}"
+      # uniq timestring for all targets
+      time_now = Time.now.utc
 
-    # uniq timestring for all targets
-    time_now = Time.now.utc
+      packages.each do |pkg|
+        next if pkg.name == '_product' # will be handled via _product:*
 
-    packages.each do |pkg|
-      next if pkg.name == '_product' # will be handled via _product:*
-
-      pkg.project.repositories.each do |repo|
-        next if params[:repository] && params[:repository] != repo.name
-
-        repo.release_targets.each do |releasetarget|
-          next unless releasetarget.trigger.in?(['manual', 'maintenance'])
-          next if params[:targetproject] && params[:targetproject] != releasetarget.target_repository.project.name
-          next if params[:targetreposiory] && params[:targetreposiory] != releasetarget.target_repository.name
-
-          # release source and binaries
-          # permission checking happens inside this function
-          release_package(pkg,
-                          releasetarget.target_repository,
-                          pkg.release_target_name(releasetarget.target_repository, time_now),
-                          { filter_source_repository: repo,
-                            setrelease: params[:setrelease],
-                            manual: true,
-                            comment: comment })
+        pkg.project.repositories.each do |repo|
+          repo.release_targets.each do |releasetarget|
+            # release source and binaries
+            # permission checking happens inside this function
+            release_package(pkg,
+                            releasetarget.target_repository,
+                            pkg.release_target_name(releasetarget.target_repository, time_now),
+                            { filter_source_repository: repo,
+                              setrelease: params[:setrelease],
+                              manual: true,
+                              comment: comment })
+          end
         end
       end
     end

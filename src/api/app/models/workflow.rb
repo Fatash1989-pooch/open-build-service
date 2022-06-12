@@ -1,43 +1,50 @@
 class Workflow
   include ActiveModel::Model
+  include WorkflowInstrumentation # for run_callbacks
+
+  SCM_CI_DOCUMENTATION_URL = 'https://openbuildservice.org/help/manuals/obs-user-guide/cha.obs.scm_ci_workflow_integration.html'.freeze
 
   SUPPORTED_STEPS = {
     branch_package: Workflow::Step::BranchPackageStep, link_package: Workflow::Step::LinkPackageStep,
     configure_repositories: Workflow::Step::ConfigureRepositories, rebuild_package: Workflow::Step::RebuildPackage,
-    set_flags: Workflow::Step::SetFlags
+    set_flags: Workflow::Step::SetFlags, trigger_services: Workflow::Step::TriggerServices
   }.freeze
 
   SUPPORTED_FILTERS = [:architectures, :branches, :event, :repositories].freeze
 
-  attr_accessor :workflow_instructions, :scm_webhook, :token, :workflow_run_id
+  attr_accessor :workflow_instructions, :scm_webhook, :token, :workflow_run
 
   def initialize(attributes = {})
-    super
-    @workflow_instructions = attributes[:workflow_instructions].deep_symbolize_keys
+    run_callbacks(:initialize) do
+      super
+      @workflow_instructions = attributes[:workflow_instructions].deep_symbolize_keys
+    end
   end
 
   validates_with WorkflowStepsValidator
   validates_with WorkflowFiltersValidator
 
   def call
-    return unless event_matches_event_filter?
-    return unless branch_matches_branches_filter?
+    run_callbacks(:call) do
+      return unless event_matches_event_filter?
+      return unless branch_matches_branches_filter?
 
-    case
-    when scm_webhook.closed_merged_pull_request?
-      destroy_target_projects
-    when scm_webhook.reopened_pull_request?
-      restore_target_projects
-    when scm_webhook.new_pull_request?, scm_webhook.updated_pull_request?, scm_webhook.push_event?, scm_webhook.tag_push_event?
-      steps.each do |step|
-        call_step_and_collect_artifacts(step)
+      case
+      when scm_webhook.closed_merged_pull_request?
+        destroy_target_projects
+      when scm_webhook.reopened_pull_request?
+        restore_target_projects
+      when scm_webhook.new_pull_request?, scm_webhook.updated_pull_request?, scm_webhook.push_event?, scm_webhook.tag_push_event?
+        steps.each do |step|
+          call_step_and_collect_artifacts(step)
+        end
       end
     end
   end
 
   # ArtifactsCollector can only be called if the step.call doesn't return nil because of a validation error
   def call_step_and_collect_artifacts(step)
-    step.call({ workflow_filters: filters }) && Workflows::ArtifactsCollector.new(step: step, workflow_run_id: workflow_run_id).call
+    step.call({ workflow_filters: filters }) && Workflows::ArtifactsCollector.new(step: step, workflow_run_id: workflow_run.id).call
   end
 
   def steps
@@ -69,7 +76,8 @@ class Workflow
   def initialize_step(step_name, step_instructions)
     SUPPORTED_STEPS[step_name].new(step_instructions: step_instructions,
                                    scm_webhook: scm_webhook,
-                                   token: token)
+                                   token: token,
+                                   workflow_run: workflow_run)
   end
 
   def supported_filters
@@ -107,8 +115,8 @@ class Workflow
   def destroy_target_projects
     # Do not process steps for which there's nothing to do
     processable_steps = steps.reject { |step| step.instance_of?(::Workflow::Step::ConfigureRepositories) || step.instance_of?(::Workflow::Step::RebuildPackage) }
-    target_packages = steps.map(&:target_package).uniq.compact
-    EventSubscription.where(channel: 'scm', token: self, package: target_packages).delete_all
+    target_packages = processable_steps.map(&:target_package).uniq.compact
+    EventSubscription.where(channel: 'scm', token: token, package: target_packages).delete_all
 
     target_project_names = processable_steps.map(&:target_project_name).uniq.compact
     # We want the callbacks to run after destroy, so we can't use delete_all

@@ -643,6 +643,9 @@ our $buildinfo = [
         'modularity_meta',
         'modularity_yaml',	# external
 
+	'slsaprovenance',	# internal
+	'slsadownloadurl',	# internal
+
       [ 'preinstallimage' =>
 	    'project',
 	    'repository',
@@ -1704,6 +1707,7 @@ our $issue_trackers = [
 	    'description',
 	    'kind',
             'label',
+            'publish-issues',
             'enable-fetch',
 	    'regex',
 	    'user',
@@ -1859,6 +1863,7 @@ our $buildstatistics = [
 	  [ 'buildcmp' => $time ],
 	  [ 'deltarpms' => $time ],
 	  [ 'download' => $time ],
+	  [ 'cpusteal' => $time ],
       ],
       [ 'download' =>
 	    [],
@@ -1934,7 +1939,9 @@ our $buildstatslay = [
     'stats_workerid',
     'stats_hostarch',
     'stats_reason',
-    'stats_verifymd5'
+    'stats_verifymd5',
+    'stats_buildstatistics_times_cpusteal_time_unit',
+    'stats_buildstatistics_times_cpusteal_time__content'
 ];
 
 

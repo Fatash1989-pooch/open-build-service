@@ -1,8 +1,4 @@
 class Token::Rebuild < Token
-  def self.token_name
-    'rebuild'
-  end
-
   def call(options)
     set_triggered_at
     package_name = options[:package].to_param
@@ -22,7 +18,7 @@ end
 # Table name: tokens
 #
 #  id           :integer          not null, primary key
-#  name         :string(64)       default("")
+#  description  :string(64)       default("")
 #  scm_token    :string(255)      indexed
 #  string       :string(255)      indexed
 #  triggered_at :datetime

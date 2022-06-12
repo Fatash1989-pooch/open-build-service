@@ -12,7 +12,7 @@
               %fieldset.form-group
                 = f.label(:string_readonly, 'Your new OBS Personal Access Token Secret', class: 'col-form-label col-form-label-lg')
                 .input-group
-                  = render CopyToClipboardInputComponent.new(token_string: @token.string)
+                  = render CopyToClipboardInputComponent.new(input_text: @token.string)
               %hr
 
           .form-row
@@ -22,13 +22,13 @@
                 = @token.id
               .form-group
                 = f.label(:type, 'Operation:')
-                = @token.class.token_name.capitalize
+                = @token.token_name.capitalize
               .form-group
-                = f.label(:name, 'Name:')
-                %span.d-none#original-token-name
-                  = @token.name
-                .input-group#token-name-text-field
-                  = f.text_field(:name, class: 'form-control', placeholder: 'Eg: Rebuild vim package', maxlength: 64)
+                = f.label(:description, 'Description:')
+                %span.d-none#original-token-description
+                  = @token.description
+                .input-group#token-description-text-field
+                  = f.text_field(:description, class: 'form-control', placeholder: 'Eg: Rebuild vim package', maxlength: 64)
               - if @token.package.present?
                 .form-group
                   = f.label(:type, 'Package:')

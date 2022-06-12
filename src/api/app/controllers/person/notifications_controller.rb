@@ -3,9 +3,8 @@ module Person
     include Person::Errors
 
     MAX_PER_PAGE = 300
-    ALLOWED_FILTERS = ['requests', 'incoming_requests', 'outgoing_requests'].freeze
+    ALLOWED_FILTERS = ['requests', 'incoming_requests', 'outgoing_requests', 'read'].freeze
 
-    before_action :check_feature_toggle
     before_action :check_filter_type, except: [:update]
 
     # GET /my/notifications
@@ -30,12 +29,13 @@ module Person
     end
 
     def fetch_notifications
-      notifications_for_subscribed_user = NotificationsFinder.new(policy_scope(Notification))
+      notifications = policy_scope(Notification)
+      notifications_finder = NotificationsFinder.new(notifications)
 
       filtered_notifications = if params[:project]
-                                 notifications_for_subscribed_user.for_project_name(params[:project])
+                                 notifications_finder.for_project_name(params[:project])
                                else
-                                 notifications_for_subscribed_user.for_subscribed_user
+                                 notifications
                                end
       # We are limiting it just for BsRequests
       NotificationsFinder.new(filtered_notifications).for_notifiable_type(@filter_type)
@@ -52,10 +52,6 @@ module Person
     def check_filter_type
       @filter_type = params.fetch(:notifications_type, 'requests')
       raise FilterNotSupportedError unless ALLOWED_FILTERS.include?(@filter_type)
-    end
-
-    def check_feature_toggle
-      raise NotFoundError unless Flipper.enabled?(:notifications_redesign, User.session)
     end
   end
 end

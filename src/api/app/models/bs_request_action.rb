@@ -430,7 +430,6 @@ class BsRequestAction < ApplicationRecord
       # FIXME: this is currently handling local project links for packages with multiple spec files.
       #        This can be removed when we handle this as shadow packages in the backend.
       tpkg = ltpkg    = pkg.name
-      rev             = source_rev
       data            = nil
       missing_ok_link = false
       suffix          = ''
@@ -552,9 +551,14 @@ class BsRequestAction < ApplicationRecord
         new_action.target_project = tprj.name
         new_action.target_package = tpkg + incident_suffix
       end
-      new_action.source_rev = rev if rev
       if is_maintenance_release? || is_release?
         if pkg.is_channel?
+
+          if new_action.source_rev.blank?
+            # set revision
+            dir = Xmlhash.parse(Backend::Api::Sources::Package.files(new_action.source_project, new_action.source_package, { expand: 1 }))
+            new_action.source_rev = dir['srcmd5']
+          end
 
           # create submit request for possible changes in the _channel file
           submit_action = create_submit_action(source_package: new_action.source_package, source_project: new_action.source_project,
@@ -908,6 +912,12 @@ class BsRequestAction < ApplicationRecord
         raise SubmitRequestRejected, "The target project #{target_project} is a maintenance release project, " \
                                      'a submit self is not possible, please use the maintenance workflow instead.'
       end
+
+      if tprj.scmsync.present?
+        raise RequestRejected,
+              "The target project #{target_project} is managed in an external SCM: #{tprj.scmsync}"
+      end
+
       a = tprj.find_attribute('OBS', 'RejectRequests')
       if a && a.values.first
         if a.values.length < 2 || a.values.find_by_value(action_type)
@@ -920,11 +930,19 @@ class BsRequestAction < ApplicationRecord
          action_type.in?([:delete, :change_devel, :add_role, :set_bugowner])
         tpkg = Package.get_by_project_and_name(target_project, target_package)
       end
-      a = tpkg.find_attribute('OBS', 'RejectRequests') if defined?(tpkg) && tpkg
-      if defined?(a) && a && a.values.first
-        if a.values.length < 2 || a.values.find_by_value(action_type)
-          raise RequestRejected, "The target package #{target_project} / #{target_package} is not accepting " \
-                                 "requests because: #{a.values.first.value}"
+
+      if defined?(tpkg) && tpkg
+        if tpkg.scmsync.present?
+          raise RequestRejected,
+                "The target package #{target_project} #{target_package} is managed in an external SCM: #{tpkg.scmsync}"
+        end
+
+        a = tpkg.find_attribute('OBS', 'RejectRequests')
+        if a && a.values.first
+          if a.values.length < 2 || a.values.find_by_value(action_type)
+            raise RequestRejected, "The target package #{target_project} / #{target_package} is not accepting " \
+                                   "requests because: #{a.values.first.value}"
+          end
         end
       end
     end

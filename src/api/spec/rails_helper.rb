@@ -66,7 +66,6 @@ require 'support/shoulda_matchers'
 # helper methods for authentication
 require 'support/controllers/controllers_authentication'
 require 'support/models/models_authentication'
-require 'support/requests/requests_authentification'
 
 # support Delayed Jobs
 require 'support/delayed_job'
@@ -85,3 +84,6 @@ require 'support/thinking_sphinx'
 
 # support beta
 require 'support/beta'
+
+# custom matchers to test RuboCop custom cops
+require 'support/rubocop'

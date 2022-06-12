@@ -16,13 +16,13 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
   RSpec.shared_context 'source_project not provided' do
     let(:step_instructions) { { source_package: package.name, target_project: target_project_name } }
 
-    it { expect { subject.call }.to(change(Package, :count).by(0)) }
+    it { expect { subject.call }.not_to(change(Package, :count)) }
   end
 
   RSpec.shared_context 'source_package not provided' do
     let(:step_instructions) { { source_project: package.project.name, target_project: target_project_name } }
 
-    it { expect { subject.call }.to(change(Package, :count).by(0)) }
+    it { expect { subject.call }.not_to(change(Package, :count)) }
   end
 
   RSpec.shared_context 'failed when source_package does not exist' do
@@ -38,7 +38,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
   end
 
   RSpec.shared_context 'failed without branch permissions' do
-    let(:branch_package_mock) { instance_double('BranchPackage') }
+    let(:branch_package_mock) { instance_double(BranchPackage) }
     before do
       allow(BranchPackage).to receive(:new).and_return(branch_package_mock)
       allow(branch_package_mock).to receive(:branch).and_raise(CreateProjectNoPermission)
@@ -111,15 +111,15 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
       package.save_file({ file: existing_branch_request_file, filename: '_branch_request' })
     end
 
-    it { expect { subject.call }.to(change(Package, :count).by(0)) }
+    it { expect { subject.call }.not_to(change(Package, :count)) }
     it { expect { subject.call.source_file('_branch_request') }.not_to raise_error }
 
     it 'updates _branch_request file including new commit sha' do
       expect(subject.call.source_file('_branch_request')).to include('456')
     end
 
-    it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count).by(0)) }
-    it { expect { subject.call }.to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count).by(0)) }
+    it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildFail'), :count)) }
+    it { expect { subject.call }.not_to(change(EventSubscription.where(eventtype: 'Event::BuildSuccess'), :count)) }
     it { expect { subject.call }.to(change { EventSubscription.where(eventtype: 'Event::BuildSuccess').last.payload }.from(creation_payload).to(update_payload)) }
   end
 
@@ -303,7 +303,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
           ScmWebhook.new(payload: {
                            scm: 'github',
                            event: 'push',
-                           target_branch: 'main',
+                           target_branch: '123456789012345',
                            source_repository_full_name: 'openSUSE/open-build-service',
                            tag_name: 'release_abc',
                            commit_sha: '123456789012345',
@@ -473,7 +473,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
       it 'gives an error for invalid name' do
         subject.valid?
 
-        expect { subject.call }.to change(Package, :count).by(0)
+        expect { subject.call }.not_to change(Package, :count)
         expect(subject.errors.full_messages.to_sentence).to eq("invalid source project 'Invalid/format'")
       end
     end
@@ -484,7 +484,7 @@ RSpec.describe Workflow::Step::BranchPackageStep, vcr: true do
       it 'gives an error for invalid name' do
         subject.valid?
 
-        expect { subject.call }.to change(Package, :count).by(0)
+        expect { subject.call }.not_to change(Package, :count)
         expect(subject.errors.full_messages.to_sentence).to eq("invalid source package 'Invalid/format'")
       end
     end

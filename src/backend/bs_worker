@@ -31,6 +31,7 @@ BEGIN {
 }
 
 use Digest::MD5 ();
+use Digest::SHA ();
 use XML::Structured ':bytes';
 use Data::Dumper;
 use POSIX;
@@ -53,7 +54,6 @@ use BSVerify;
 
 my $can_rewrite_containers;
 eval {
-  require Digest::SHA;
   require BSTar;
   require BSContar;
   $can_rewrite_containers = 1;
@@ -81,6 +81,7 @@ my $vm_kernel;
 my $vm_initrd;
 my $vm_memory;
 my $vm_custom_option;
+my $vm_use_mkfs_copyin;
 my $vm_enable_console;
 my $vm_worker_name;
 my $vm_worker_instance;
@@ -218,7 +219,7 @@ sub cleanup_job {
 sub kill_job {
   my @args;
   # same args as in the build call
-  if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+  if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
     push @args, '--root', "$buildroot/.mount";
     push @args, '--vm-type', $vm;
     push @args, '--vm-disk', $vm_root;
@@ -239,7 +240,7 @@ sub kill_job {
 sub sysrq_job {
   my ($sysrq) = @_;
   my @args;
-  if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+  if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
     push @args, '--root', "$buildroot/.mount";
     push @args, '--vm-type', $vm;
     push @args, '--vm-disk', $vm_root;
@@ -256,7 +257,7 @@ sub sysrq_job {
 
 sub wipe_all {
   my @args;
-  if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+  if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
     push @args, '--root', "$buildroot/.mount";
     push @args, '--vm-type', $vm;
     push @args, '--vm-disk', $vm_root;
@@ -292,16 +293,6 @@ Usage: $0 [OPTION] --root <directory> --statedir <directory>
                      currently supported architectures: 
                      @{[sort keys %BSCando::cando]}
 
-       --kvm       : enable kvm
-
-       --pvm       : enable pvm
-
-       --xen       : enable xen
-
-       --lxc       : enable lxc
-
-       --docker    : enable docker
-
        --emulator  : enable emulator (requires prepared emulator.sh script)
        
        --zvm       : enable z/VM
@@ -313,6 +304,10 @@ Usage: $0 [OPTION] --root <directory> --statedir <directory>
        --swap      : set kvm or xen swap device (default is <root>/swap file)
 
        --hostlabel : define a host label for build constraints, can be used multiple times
+
+       --vm-type   : set virtualisation mode to use (kvm, xen, qemu:\$HOSTARCH, zvm, emulator:\$HOSTARCH)
+                     Also possible are lxc or docker, but these are less secure and are not using
+                     the specified kernel for the build target.
 
        --vm-kernel : set kernel to use (xen/kvm)
 
@@ -395,6 +390,7 @@ my $exitrestart;
 my $exitrestart_timeout = 300;	# wait max 5 minuntes
 
 exit(0) if @ARGV == 1 && $ARGV[0] eq '--selftest';
+return 1 if @ARGV == 1 && $ARGV[0] eq '--testcase';
 
 while (@ARGV) {
   usage(0) if $ARGV[0] eq '--help';
@@ -514,6 +510,11 @@ while (@ARGV) {
   if ($ARGV[0] eq '--vm-enable-console') {
     shift @ARGV;
     $vm_enable_console = 1;
+    next;
+  }
+  if ($ARGV[0] eq '--vm-use-mkfs-copyin') {
+    shift @ARGV;
+    $vm_use_mkfs_copyin = 1;
     next;
   }
   if ($ARGV[0] eq '--vmdisk-rootsize') {
@@ -1027,6 +1028,16 @@ sub importbuild {
     Build->import();
 }
 
+sub sha256file {
+  my ($fn) = @_;
+  my $fd;
+  open($fd, '<', $fn) || die("$fn: $!\n");
+  my $ctx = Digest::SHA->new(256);
+  $ctx->addfile($fd);
+  close($fd);
+  return $ctx->hexdigest();
+}
+
 sub getsources {
   my ($buildinfo, $dir) = @_;
 
@@ -1060,11 +1071,17 @@ sub getsources {
   $md5 = Digest::MD5::md5_hex($md5);
   die("source verification fails: $md5 != $buildinfo->{'verifymd5'}\n") if $md5 ne $buildinfo->{'verifymd5'};
 
+  # add to slsa materials list
+  if ($buildinfo->{'slsaprovenance'}) {
+    add_slsa_materials_sourcefile($buildinfo, $_, "$dir/$_") for @f;
+  }
+
   return @meta unless $buildinfo->{'file'} =~ /\.kiwi$/;
 
   # get additional kiwi sources
   my @sdep = grep {($_->{'repoarch'} || '') eq 'src'} @{$buildinfo->{'bdep'} || []};
   for my $src (@sdep) {
+    die("additional kiwi sources not implemented for slsa provenance\n") if $buildinfo->{'slsaprovenance'};
     print "$src->{'name'}, ";
     my $idir = "$src->{'project'}/$src->{'package'}";
     $idir = "$dir/images/$idir";
@@ -1220,6 +1237,13 @@ sub link_or_copy {
     return undef;
   }
   return 1;
+}
+
+sub get_cachefile {
+  my ($prpa, $key) = @_;
+  my $cacheid = Digest::SHA::sha256_hex("$prpa/$key");
+  my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+  return ($cacheid, $cachefile);
 }
 
 sub move_entry_into_cache {
@@ -1412,8 +1436,7 @@ sub getbinaries_cache {
       next;
     }
     next if $bv->{'error'};
-    my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$bv->{'hdrmd5'}");
-    my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+    my ($cacheid, $cachefile) = get_cachefile("$projid/$repoid/$arch", $bv->{'hdrmd5'});
     if (!link_or_copy($cachefile, "$dir/$binprefix$bv->{'name'}")) {
       push @downloadbins, $bin;
       $downloadsizek += $bv->{'sizek'};
@@ -1489,7 +1512,7 @@ sub getbinaries_cache {
 	die unless @s;
         my $id = Build::queryhdrmd5("$dir/$r->{'name'}");
 	$r->{'hdrmd5'} = $id;
-	my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$id");
+	my ($cacheid) = get_cachefile("$projid/$repoid/$arch", $id);
 	push @cachenew, [$cacheid, $s[7], "$dir/$r->{'name'}"];
 	$ret{$n} = $r;
       } elsif ($r->{'name'} =~ /^(.*)\.meta$/) {
@@ -1539,6 +1562,7 @@ sub sendbadpackagebinaryversionlist {
 
 # this specialized version of getbinaries only works for
 # kiwi product builds
+# TODO: add provenance materials
 sub getbinaries_kiwiproduct {
   my ($buildinfo, $dir, $srcdir, $kiwiorigins) = @_;
 
@@ -1655,12 +1679,13 @@ sub getbinaries_kiwiproduct {
     }
     my @done;
     my @todo;
+    my %provenance;
 
     # try the cache first
     if ($bvl) {
       for my $bv (@{$bvl->{'binary'} || []}) {
 	my $bin = $bv->{'name'};
-	if ($bin =~ /appdata\.xml$/ || $bin eq '_modulemd.yaml') {
+	if ($bin =~ /appdata\.xml$/ || $bin eq '_modulemd.yaml' || $bin =~ /slsa_provenance.json$/) {
 	  push @todo, $bv;	# currently not in cache
 	  $downloadsizek += $bv->{'sizek'};
 	  next;
@@ -1670,8 +1695,7 @@ sub getbinaries_kiwiproduct {
 	next unless $binfilter{"$packid/$1.$2"};
 	next if $nodbgpkgs && $bin =~ /-(?:debuginfo|debugsource)-/;
 	next if $nosrcpkgs && ($rarch eq 'src' || $rarch eq 'nosrc');
-	my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$bv->{'hdrmd5'}$rpmhdrs_only");
-	my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+	my ($cacheid, $cachefile) = get_cachefile("$projid/$repoid/$arch", "$bv->{'hdrmd5'}$rpmhdrs_only");
 	mkdir_p("$ddir/$rarch");
 	if (link_or_copy($cachefile, "$ddir/$rarch/$bin.new.rpm")) {
 	  my @s = stat("$ddir/$rarch/$bin.new.rpm");
@@ -1682,6 +1706,7 @@ sub getbinaries_kiwiproduct {
 	    push @done, "$rarch/$bin";
 	    push @cacheold, [$cacheid, $s[7]];
 	    $knownmd5{"$rarch/$bin"} = $id;
+	    $provenance{"$rarch/$bin"} = 1;
 	  } else {
 	    unlink "$ddir/$rarch/$bin.new.rpm";
 	    push @todo, $bv;
@@ -1721,8 +1746,12 @@ sub getbinaries_kiwiproduct {
 	    my $rarch;
 	    if ($name =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.d?rpm$/) {
 	      $rarch = $2 if $binfilter{"$packid/$1.$2"};
+	    } elsif ($name =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.slsa_provenance\.json$/) {
+	      $rarch = $2 if $binfilter{"$packid/$1.$2"};
 	    } elsif ($name eq '_modulemd.yaml') {
 	      $rarch = 'modulemd';
+	    } elsif ($name eq '_slsa_provenance.json') {
+	      $rarch = '_slsa_provenance';
 	    } elsif ($name =~ /appdata\.xml$/) {
 	      $rarch = 'appdata'; 
 	    }
@@ -1739,10 +1768,14 @@ sub getbinaries_kiwiproduct {
 	  my $bin = $bv->{'name'};
 	  if ($bin =~ /-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.d?rpm$/) {
 	    unlink("$ddir/$1/$bin.new.rpm");
+	  } elsif ($bin =~ /-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.slsa_provenance\.json$/) {
+	    unlink("$ddir/$1/$bin.new.rpm");
 	  } elsif ($bin =~ /appdata\.xml$/) {
 	    unlink("$ddir/appdata/$bin.new.rpm");
 	  } elsif ($bin eq '_modulemd.yaml') {
 	    unlink("$ddir/modulemd/$bin.new.rpm");
+	  } elsif ($bin eq '_slsa_provenance.json') {
+	    unlink("$ddir/_slsa_provenance/$bin.new.rpm");
 	  }
 	}
       }
@@ -1751,10 +1784,14 @@ sub getbinaries_kiwiproduct {
 	my $rarch;
 	if ($bin =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.d?rpm$/) {
 	  $rarch = $2 if $binfilter{"$packid/$1.$2"};
+	} elsif ($bin =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.slsa_provenance\.json$/) {
+	  $rarch = $2 if $binfilter{"$packid/$1.$2"};
 	} elsif ($bin =~ /appdata\.xml$/) {
 	  $rarch = 'appdata'; 
 	} elsif ($bin eq '_modulemd.yaml') {
 	  $rarch = 'modulemd'; 
+	} elsif ($bin eq '_slsa_provenance.json') {
+	  $rarch = '_slsa_provenance';
 	}
 	next unless $rarch;
 	my @s = stat("$ddir/$rarch/$bin.new.rpm");
@@ -1767,6 +1804,7 @@ sub getbinaries_kiwiproduct {
 	    rename("$ddir/$rarch/$bin.new.rpm", "$ddir/$rarch/$packid.$arch.modulemd.yaml.new.rpm") || die("rename $ddir/$rarch/$bin.new.rpm $ddir/$rarch/$packid.$arch.modulemd.yaml.new.rpm: $!\n");
 	    $bin = "$packid.$arch.modulemd.yaml";
 	  }
+	  $provenance{"$rarch/$bin"} = 1 if $bin eq '_slsa_provenance.json' || $bin =~ /\.slsa_provenance\.json$/;
 	  push @done, "$rarch/$bin";
 	  next;
 	}
@@ -1774,9 +1812,10 @@ sub getbinaries_kiwiproduct {
 	my $id = Build::queryhdrmd5("$ddir/$rarch/$bin.new.rpm", \$leadsigmd5);
 	if ($id eq $bv->{'hdrmd5'} && (!$bv->{'leadsigmd5'} || $bv->{'leadsigmd5'} eq $leadsigmd5)) {
 	  push @done, "$rarch/$bin";
-	  my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$bv->{'hdrmd5'}$rpmhdrs_only");
+	  my ($cacheid) = get_cachefile("$projid/$repoid/$arch", "$bv->{'hdrmd5'}$rpmhdrs_only");
 	  $cachenew{"$ddir/$rarch/$bin"} = [$cacheid, $s[7], "$ddir/$rarch/$bin"];
 	  $knownmd5{"$rarch/$bin"} = $id;
+	  $provenance{"$rarch/$bin"} = 1;
 	} else {
 	  unlink "$ddir/$rarch/$bin.new.rpm";
 	  push @todo, $bv;
@@ -1800,6 +1839,7 @@ sub getbinaries_kiwiproduct {
 	delete $cachenew{"$ddir/$_"};
       }
 
+      %provenance = ();
       my @args;
       push @args, $rpmhdrs_only ? "view=cpioheaderchksums" : "view=cpio";
       push @args, "noajax=1" if $server ne $buildinfo->{'srcserver'};
@@ -1812,8 +1852,15 @@ sub getbinaries_kiwiproduct {
 	  my $rarch;
 	  if ($name =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.d?rpm$/) {
 	    $rarch = $2 if $binfilter{"$packid/$1.$2"};
+	    $provenance{"$rarch/$name"} = 1 if $rarch;
+	  } elsif ($name =~ /^(?:::import::.*::)?(.*)-[^-]+-[^-]+\.([a-zA-Z][^\.\-]*)\.slsa_provenance\.json$/) {
+	    $rarch = $2 if $binfilter{"$packid/$1.$2"};
+	    $provenance{"$rarch/$name"} = 1 if $rarch;
 	  } elsif ($name =~ /appdata\.xml$/) {
 	    $rarch = 'appdata';
+	  } elsif ($name eq '_slsa_provenance.json') {
+	    $rarch = '_slsa_provenance';
+	    $provenance{"$rarch/$name"} = 1;
 	  } elsif ($name eq '_modulemd.yaml') {
 	    $rarch = 'modulemd';
 	    $name = "$packid.$arch.modulemd.yaml";
@@ -1829,13 +1876,15 @@ sub getbinaries_kiwiproduct {
       }, undef, @args);
       die unless $res;
       @done = map {$_->{'name'}} @$res;
+
+      # put into our cache
       if ($cachedir) {
 	for my $f (@done) {
 	  my @s = stat("$ddir/$f");
 	  next unless @s;
 	  my $id = Build::queryhdrmd5("$ddir/$f");
 	  next unless $id;
-	  my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$id$rpmhdrs_only");
+	  my ($cacheid) = get_cachefile("$projid/$repoid/$arch", "$id$rpmhdrs_only");
 	  $cachenew{"$ddir/$f"} = [$cacheid, $s[7], "$ddir/$f"];
 	  $knownmd5{$f} = $id;
 	}
@@ -1843,6 +1892,21 @@ sub getbinaries_kiwiproduct {
       }
       # the bvl entry seems to be wrong. tell our server about that.
       sendbadpackagebinaryversionlist($server, $projid, $repoid, $arch, $packid) if $bvl && $server ne $buildinfo->{'srcserver'};
+    }
+
+    # spread provenance to rpms
+    if ($provenance{'_slsa_provenance/_slsa_provenance.json'}) {
+      for my $rpm (sort keys %provenance) {
+	next unless $rpm =~ /(.*)\.rpm$/;
+	next if $rpm =~ /\/::import::/;
+	next if $provenance{"$1.slsa_provenance.json"};
+	unlink("$ddir/$1.slsa_provenance.json");
+	link("$ddir/_slsa_provenance/_slsa_provenance.json", "$ddir/$1.slsa_provenance.json") || die("link $ddir/_slsa_provenance/_slsa_provenance.json $ddir/$1.slsa_provenance.json: $!\n");
+	$kiwiorigins->{"obs://$prp/$1.slsa_provenance.json"} = $prpap;
+      }
+      unlink("$ddir/_slsa_provenance/_slsa_provenance.json");
+      rmdir("$ddir/_slsa_provenance");
+      delete $kiwiorigins->{"obs://$prp/_slsa_provenance/_slsa_provenance.json"};
     }
 
     # add all entries to meta hash
@@ -1919,8 +1983,7 @@ sub getpreinstallimage_metas {
     # check the cache
     for my $bin (@bins) {
       my $bv = $metas->{$bin};
-      my $cacheid =  Digest::MD5::md5_hex("$prpa/$bv->{'hdrmd5'}");
-      my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+      my ($cacheid, $cachefile) = get_cachefile($prpa, $bv->{'hdrmd5'});
       if (link_or_copy("$cachefile.meta", "$dir/$bin.meta")) {
 	next if checkmd5("$dir/$bin.meta", $bv->{'metamd5'});
 	unlink("$dir/$bin.meta");
@@ -1972,8 +2035,7 @@ sub getpreinstallimage_metas {
       $havemeta{$bin} = 1;
       if ($cachedir) {
 	# put in cache so that we don't need to download it the next time
-	my $cacheid =  Digest::MD5::md5_hex("$prpa/$bv->{'hdrmd5'}");
-	my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+	my ($cacheid, $cachefile) = get_cachefile($prpa, $bv->{'hdrmd5'});
 	unlink("$cachefile.meta.$$");
 	if (link_or_copy("$dir/$bin.meta", "$cachefile.meta.$$")) {
 	  rename("$cachefile.meta.$$", "$cachefile.meta") || die("rename $cachefile.meta.$$ $cachefile.meta: $!\n");
@@ -1990,6 +2052,7 @@ sub getpreinstallimage {
   my ($buildinfo, $dir, $todo, $bvls) = @_;
 
   return undef unless $Build::Features::preinstallimage;
+  return undef if $buildinfo->{'slsaprovenance'};	# for now
   # get all bvls to calculate image data
   my @bins = @$todo;
   my %prpas;	# server -> prpas on this server
@@ -2111,11 +2174,9 @@ sub getpreinstallimage {
     unlink("$dir/$ifile");
 
     # check if the image is in the cache
-    my $cacheid;
-    my $cachefile;
+    my ($cacheid, $cachefile);
     if ($cachedir) {
-      $cacheid =  Digest::MD5::md5_hex("$bestimg->{'prpa'}/$bestimg->{'hdrmd5'}");
-      $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+      ($cacheid, $cachefile) = get_cachefile($bestimg->{'prpa'}, $bestimg->{'hdrmd5'});
       my $cachefilemeta = readstr("$cachefile.meta", 1) || '';
       if ($cachefilemeta eq "$bestimg->{'hdrmd5'}  :preinstallimage\n") {
 	if (link_or_copy($cachefile, "$dir/$ifile")) {
@@ -2291,8 +2352,7 @@ sub getbinaries_buildenv {
         my $repo = $bv->{'repo'};
         my $projid = $repo->{'project'};
         my $repoid = $repo->{'repository'};
-        my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$bv->{'hdrmd5'}");
-        my $cachefile = "$cachedir/".substr($cacheid, 0, 2)."/$cacheid";
+        my ($cacheid, $cachefile) = get_cachefile("$projid/$repoid/$arch", $bv->{'hdrmd5'});
         if (link_or_copy($cachefile, "$dir/$bv->{'name'}")) {
 	  my @s = stat("$dir/$bv->{'name'}");
 	  die unless @s;
@@ -2366,7 +2426,7 @@ sub getbinaries_buildenv {
       }
       die unless $bv->{'name'} =~ /(.*)\.rpm$/;
       $used{$needed} = { 'name' => $1, 'project' => $projid, 'repository' => $repoid, 'hdrmd5' => $id };
-      my $cacheid =  Digest::MD5::md5_hex("$projid/$repoid/$arch/$bv->{'hdrmd5'}");
+      my ($cacheid) = get_cachefile("$projid/$repoid/$arch", $bv->{'hdrmd5'});
       push @cachenew, [$cacheid, $s[7], "$dir/$bv->{'name'}"];
       delete $needed{$needed};
       last;
@@ -2465,6 +2525,7 @@ sub getbinaries_containers {
   return @meta;
 }
 
+# TODO: add provenance materials
 sub getbinaries_kiwiimage {
   my ($buildinfo, $dir, $srcdir, $origins) = @_;
 
@@ -2637,6 +2698,7 @@ sub getbinaries {
 	# sigh, no package information available yet...
 	$origins->{$_} = "$repoprp/$arch";
       }
+      add_slsa_materials_binary($buildinfo, "$repo->{'project'}/$repo->{'repository'}/$arch", $gotpkg->{'name'}, "$dir/$gotpkg->{'name'}") if $buildinfo->{'slsaprovenance'};
     }
     @todo = grep {!$done{"$binaryprefix$_"}} @todo;
   }
@@ -2664,6 +2726,7 @@ sub getbinaries {
         # sigh, no package information available yet...
         $origins->{$_} = "$repoprp/$arch";
       }
+      add_slsa_materials_binary($buildinfo, "$repo->{'project'}/$repo->{'repository'}/$arch", $gotpkg->{'name'}, "$dir/$gotpkg->{'name'}") if $buildinfo->{'slsaprovenance'};
     }
     @todo = grep {!$done{$_}} @todo;
   }
@@ -2986,7 +3049,7 @@ sub createchannel {
         # add them for old tools, but only for -release packages for speed reasons
         my $rpm_file = $bin->{'_content'};
         my $buildsrcdir = "$buildroot/.build.packages/SOURCES";
-        $buildsrcdir = "$buildroot/.build-srcdir" if $vm =~ /(xen|kvm|emulator)/;
+        $buildsrcdir = "$buildroot/.build-srcdir" if $vm =~ /(xen|kvm|qemu|emulator)/;
         $rpm_file =~ s/obs:\//$buildsrcdir\/repos/;
         if (-e $rpm_file) {
           my $cpeid = cpeid_from_rpm($rpm_file);
@@ -3162,6 +3225,141 @@ sub normalize_container {
   rename("$container.new", "$container") || die("rename $container.new $container: $!\n");
 }
 
+my $slsa_json_template = {
+  '_order' => [ '_type', 'subject', 'predicateType', 'predicate' ],
+  'subject' => {
+    '_order' => [ 'name', 'digest' ],
+  },
+  'predicate' => {
+    '_order' => [ 'builder', 'buildType', 'invocation', 'buildConfig', 'metadata', 'materials' ],
+    'invocation' => {
+      '_order' => [ 'configSource', 'parameters', 'environment' ],
+      'configSource' => {
+	'_order' => [ 'uri', 'digest', 'entryPoint' ],
+      }
+    },
+    'metadata' => {
+      '_order' => [ 'buildInvocationId', 'buildStartedOn', 'buildFinishedOn', 'completeness', 'reproducible' ],
+      'completeness' => {
+	'_order' => [ 'parameters', 'environment', 'materials' ],
+	'*' => 'bool',
+      },
+      'reproducible' => 'bool',
+    },
+    'materials' => {
+      '_order' => ['uri', 'digest' ],
+    }
+  }
+};
+
+sub provenance_tojson {
+  my ($provenance) = @_;
+  require Build::SimpleJSON;
+  return Build::SimpleJSON::unparse($provenance,  'template' => $slsa_json_template, 'keepspecial' => 1);
+}
+
+sub generate_slsa_provenance_statement {
+  my ($buildinfo, $send) = @_;
+
+  # Generate subject, from the output artifacts
+  my $subject = [];
+  for my $artifact (@$send) {
+    next if $artifact->{name} =~ /^(rpmlint\.log|_statistics|_buildenv)$/;
+
+    my $sha256sum = sha256file($artifact->{'filename'});
+    push @$subject, { 'name' => $artifact->{'name'}, 'digest' => { 'sha256' => $sha256sum }};
+  }
+  
+  my $configsourceuri;
+  if ($buildinfo->{'slsadownloadurl'} && $buildinfo->{'slsadownloadurl'} =~ /(.*)\/_slsa$/) {
+    # using the source publishing server
+    my $server = $1;
+    $configsourceuri = BSHTTP::urlencode("$server/$buildinfo->{'project'}/$buildinfo->{'package'}/$buildinfo->{'srcmd5'}");
+  } else {
+    my $server = $buildinfo->{'slsadownloadurl'} || $buildinfo->{'srcserver'} || $srcserver;
+    $configsourceuri = BSHTTP::urlencode("$server/source/$buildinfo->{'project'}/$buildinfo->{'package'}")."?rev=$buildinfo->{'srcmd5'}";
+  }
+
+  my $stmt = {
+    '_type' => "https://in-toto.io/Statement/v0.1",
+    'subject' => $subject,
+    'predicateType' => 'https://slsa.dev/provenance/v0.2',
+    'predicate' => {
+      'builder' => {
+        'id' => $buildinfo->{'srcserver'}
+      },
+      'buildType' => 'https://open-build-server/worker',
+      'invocation' => {
+        'configSource' => {
+          'uri' => $configsourceuri,
+          'entryPoint' => $buildinfo->{'file'},
+        },
+      },
+      'metadata' => {
+        'completeness' => {
+          'parameters' => 1,
+          'environment' => 1,
+          'materials' => 1,
+        },
+        'reproducible' => 0,
+      },
+      'materials' => $buildinfo->{'materials'} || [],
+    },
+  };
+  $stmt->{'predicate'}->{'invocation'}->{'parameters'}->{'release'} = $buildinfo->{'release'} if defined $buildinfo->{'release'};
+  $stmt->{'predicate'}->{'invocation'}->{'parameters'}->{'buildflavor'} = $buildinfo->{'buildflavor'} if defined $buildinfo->{'buildflavor'};
+  return provenance_tojson($stmt);
+}
+
+sub add_slsa_materials_sourcefile {
+  my ($buildinfo, $filename, $localfile) = @_;
+  my $sha256sum = sha256file($localfile);
+  my $uri;
+  if ($buildinfo->{'slsadownloadurl'} && $buildinfo->{'slsadownloadurl'} =~ /(.*)\/_slsa$/) {
+    # using the source publishing server
+    my $server = $1;
+    $uri = BSHTTP::urlencode("$server/$buildinfo->{'project'}/$buildinfo->{'package'}/$buildinfo->{'srcmd5'}/$filename");
+  } else {
+    # using the api server
+    my $server = $buildinfo->{'slsadownloadurl'} || $buildinfo->{'srcserver'} || $srcserver;
+    $uri = BSHTTP::urlencode("$server/source/$buildinfo->{'project'}/$buildinfo->{'package'}/$filename")."?rev=$buildinfo->{'srcmd5'}";
+  }
+  push @{$buildinfo->{'materials'}}, { 'uri' => $uri, 'digest' => { 'sha256' => $sha256sum } };
+}
+
+sub add_slsa_materials_binary {
+  my ($buildinfo, $prpa, $filename, $localfile) = @_;
+  my $sha256sum = sha256file($localfile);
+  my $uri;
+  if ($buildinfo->{'slsadownloadurl'} && $buildinfo->{'slsadownloadurl'} =~ /\/_slsa$/) {
+    # using the source publishing server
+    my $server = $buildinfo->{'slsadownloadurl'};
+    $uri = BSHTTP::urlencode("$server/$prpa/$filename/$sha256sum");
+  } else {
+    # using the api server
+    my $server = $buildinfo->{'slsadownloadurl'} || $buildinfo->{'srcserver'} || $srcserver;
+    $uri = BSHTTP::urlencode("$server/slsa/$prpa/$filename/$sha256sum");
+  }
+  push @{$buildinfo->{'materials'}}, { 'uri' => $uri, 'digest' => { 'sha256' => $sha256sum } };
+}
+
+sub add_slsa_materials_config {
+  my ($buildinfo, $prp, $config) = @_;
+  my $sha256sum = Digest::SHA::sha256_hex($config);
+  my ($prpa, $filename) = ("$prp/noarch", '_config');
+  my $uri;
+  if ($buildinfo->{'slsadownloadurl'} && $buildinfo->{'slsadownloadurl'} =~ /\/_slsa$/) {
+    # using the source publishing server
+    my $server = $buildinfo->{'slsadownloadurl'};
+    $uri = BSHTTP::urlencode("$server/$prpa/$filename/$sha256sum");
+  } else {
+    # using the api server
+    my $server = $buildinfo->{'slsadownloadurl'} || $buildinfo->{'srcserver'} || $srcserver;
+    $uri = BSHTTP::urlencode("$server/slsa/$prpa/$filename/$sha256sum");
+  }
+  push @{$buildinfo->{'materials'}}, { 'uri' => $uri, 'digest' => { 'sha256' => $sha256sum } };
+}
+
 $Build::Kiwi::urlmapper = sub {return '_obsrepositories'}  unless $Build::Kiwi::urlmapper;
 
 sub dobuild {
@@ -3327,9 +3525,10 @@ sub dobuild {
     $config = BSRPC::rpc("$server/getconfig", undef, "project=$projid", "repository=$repoid", @configpath);
     $config = Build::combine_configs($config, "Macros:\n$buildinfo->{'modularity_macros'}") if $buildinfo->{'modularity_macros'};
   }
+  $buildinfo->{'slsa_provenance_config'} = $config if $buildinfo->{'slsaprovenance'};
   $buildinfo->{'outbuildinfo'}->{'config'} = $config;
   writestr("$buildroot/.build.config", undef, $config);
-
+  add_slsa_materials_config($buildinfo, "$projid/$repoid", $config);
 
   my $bconf = Build::read_config($buildinfo->{'arch'}, "$buildroot/.build.config");
   my $useccache = $buildinfo->{'ccache'} ? 1 : 0;
@@ -3428,7 +3627,7 @@ sub dobuild {
   }
 
   push @args, "$statedir/build/build";
-  if ($vm =~ /(xen|kvm|zvm|emulator|pvm)/) {
+  if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm)/) {
     # allow overriding the filesystem type via the build config
     my $filesystemtype = $bconf->{'buildflags:vmfstype'} || $vmdisk_filesystem;
     my $filesystemoptions = $bconf->{'buildflags:vmfsoptions'} || $vmdisk_filesystem_options;
@@ -3450,6 +3649,7 @@ sub dobuild {
     push @args, '--vmdisk-swapsize', $vmdisk_swapsize if $vmdisk_swapsize;
     push @args, '--vmdisk-filesystem', $filesystemtype if $filesystemtype;
     push @args, '--vmdisk-filesystem-options', $filesystemoptions if $filesystemoptions;
+    push @args, '--vm-use-mkfs-copyin' if $vm_use_mkfs_copyin && $filesystemtype =~ /^ext/;
     push @args, "--vmdisk-mount-options=$vmdisk_mount_options" if $vmdisk_mount_options;
     push @args, '--vmdisk-clean'if $vmdisk_clean;
     push @args, '--hugetlbfs', $hugetlbfs if $hugetlbfs;
@@ -3499,6 +3699,7 @@ sub dobuild {
     $packid =~ /^(.*):(.*?)$/;
     push @args, "--obspackage=$1" if $needobspackage;
     push @args, "--buildflavor=$2";
+    $buildinfo->{'buildflavor'} = $2;
   } else {
     push @args, "--obspackage=$packid" if $needobspackage;
   }
@@ -3534,7 +3735,7 @@ sub dobuild {
     if (($buildinfo->{'reason'} || '') eq "rebuild counter sync") {
       $ret = 0;
     } else {
-      if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+      if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
         my $statsfile = "$buildroot/.mount/.build.packages/OTHER/_statistics";
         updatestatsfromfile($stats, $statsfile) if -e $statsfile;
       }
@@ -3548,7 +3749,7 @@ sub dobuild {
   } elsif ($ret == 4 * 256) {
     return 4;
   } elsif ($ret == 9 * 256) {
-    if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+    if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
       rm_rf("$buildroot/.build.packages");
       if (!rename("$buildroot/.mount/.build.packages", "$buildroot/.build.packages")) {
         print "final rename failed: $!\n";
@@ -3565,7 +3766,7 @@ sub dobuild {
     return 1;
   }
 
-  if ($vm =~ /(xen|kvm|zvm|emulator|pvm|openstack)/) {
+  if ($vm =~ /(xen|kvm|qemu|zvm|emulator|pvm|openstack)/) {
     rm_rf("$buildroot/.build.packages");
     # move directory with extracted build results
     if(!rename("$buildroot/.mount/.build.packages", "$buildroot/.build.packages")) {
@@ -3623,6 +3824,7 @@ sub updatestatsfromfile {
 	'TIME_rpmlint' => 'rpmlint',
 	'TIME_buildcmp' => 'buildcmp',
 	'TIME_deltarpms' => 'deltarpms',
+	'TIME_cpusteal' => 'cpusteal',
       );
       while (<FILE>) {
         chomp;
@@ -4154,7 +4356,7 @@ if ($@) {
 }
 if ($buildinfo->{'followupfile'}) {
   my $buildsrcdir = "$buildroot/.build.packages/SOURCES";
-  $buildsrcdir = "$buildroot/.build-srcdir" if $vm =~ /(xen|kvm|emulator)/;
+  $buildsrcdir = "$buildroot/.build-srcdir" if $vm =~ /(xen|kvm|qemu|emulator)/;
   # if it was a follow up build, prepend old logfile
   if (-s "$buildsrcdir/logfile") {
     local *F;
@@ -4296,6 +4498,14 @@ if ($ex == 0) {
   }
   @send = map {{name => (split('/', $_))[-1], filename => $_}} @send;
   @send = grep {$_->{'name'} ne '_generated_buildreqs'} @send;
+
+  @send = grep {$_->{'name'} !~ /slsa_provenance.(?:json|config)$/} @send;
+  if ($buildinfo->{'slsaprovenance'}) {
+    my $slsa_provenance = generate_slsa_provenance_statement($buildinfo, \@send);
+    push @send, { 'name' => '_slsa_provenance.json', 'data' => $slsa_provenance };
+    push @send, { 'name' => '_slsa_provenance.config', 'data' => $buildinfo->{'slsa_provenance_config'}} if $buildinfo->{'slsa_provenance_config'};
+  }
+  
   if ($kiwitree) {
     my $kiwitreefile = "$buildroot/.build.packages/.kiwitree";
     eval {

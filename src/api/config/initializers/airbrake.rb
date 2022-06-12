@@ -8,13 +8,13 @@
 # Configuration details:
 # https://github.com/airbrake/airbrake-ruby#configuration
 Airbrake.configure do |c|
-  c.host = CONFIG['errbit_host'] || ENV['ERRBIT_HOST']
+  c.host = CONFIG['errbit_host'] || ENV.fetch('ERRBIT_HOST', nil)
   # You must set both project_id & project_key. To find your project_id and
   # project_key navigate to your project's General Settings and copy the values
   # from the right sidebar.
   # https://github.com/airbrake/airbrake-ruby#project_id--project_key
-  c.project_id  = CONFIG['errbit_project_id'] || ENV['ERRBIT_PROJECT_ID']
-  c.project_key = CONFIG['errbit_api_key'] || ENV['ERRBIT_API_KEY']
+  c.project_id  = CONFIG['errbit_project_id'] || ENV.fetch('ERRBIT_PROJECT_ID', nil)
+  c.project_key = CONFIG['errbit_api_key'] || ENV.fetch('ERRBIT_API_KEY', nil)
   c.app_version = CONFIG['version']
 
   # Configures the root directory of your project. Expects a String or a
@@ -107,6 +107,9 @@ def ignore_by_class?(notice)
 end
 
 def ignore_exception?(notice)
+  notice[:errors].pluck(:type).each do |type|
+    InfluxDB::Rails.instrument('exceptions', tags: { exception: type }, values: { value: 1 })
+  end
   ignore_by_class?(notice) || ignore_by_class_and_message?(notice)
 end
 

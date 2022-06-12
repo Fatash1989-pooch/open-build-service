@@ -1064,13 +1064,20 @@ sub create {
   unshift @bdeps, @{$genbuildreqs->[1]} if $genbuildreqs;
   unshift @bdeps, @{$info->{'dep'} || []}, @btdeps, @{$ctx->{'extradeps'} || []};
   push @bdeps, '--ignoreignore--' if @sysdeps || $buildtype eq 'simpleimage';
-  if ($packid && exists($bconf->{'buildflags:useccache'}) && ($buildtype eq 'arch' || $buildtype eq 'spec' || $buildtype eq 'dsc')) {
-    my $opackid = $packid;
-    $opackid = $pdata->{'releasename'} if $pdata->{'releasename'};
-    if (grep {$_ eq "useccache:$opackid" || $_ eq "useccache:$packid"} @{$bconf->{'buildflags'} || []}) {
+  # enable ccache support if requested
+  if ($buildtype eq 'arch' || $buildtype eq 'spec' || $buildtype eq 'dsc') {
+    my @enable_ccache = grep {/^--enable-ccache/} Build::do_subst($bconf, @{$info->{'dep'} || []});
+    if (@enable_ccache) {
       $ccache = $bconf->{'buildflags:ccachetype'} || 'ccache';
-      push @bdeps, @{$bconf->{'substitute'}->{"build-packages:$ccache"} || [ $ccache ] };
+      $ccache = $1 if $enable_ccache[0] =~ /--enable-ccache=(.+)$/;
+    } elsif ($packid && exists($bconf->{'buildflags:useccache'})) {
+      my $opackid = $packid;
+      $opackid = $pdata->{'releasename'} if $pdata->{'releasename'};
+      if (grep {$_ eq "useccache:$opackid" || $_ eq "useccache:$packid"} @{$bconf->{'buildflags'} || []}) {
+        $ccache = $bconf->{'buildflags:ccachetype'} || 'ccache';
+      }
     }
+    push @bdeps, @{$bconf->{'substitute'}->{"build-packages:$ccache"} || [ $ccache ] } if $ccache;
   }
 
   if ($kiwimode || $buildtype eq 'buildenv') {
@@ -1213,6 +1220,14 @@ sub create {
                                   'repository' => $releasetarget->{'repository'} };
 
     }
+    $binfo->{'slsaprovenance'} = 1 if $BSConfig::slsaprovenance && grep { $prp =~ /^$_/} @$BSConfig::slsaprovenance;
+    if ($binfo->{'slsaprovenance'}) {
+      if ($BSConfig::sourcepublish_downloadurl) {
+	$binfo->{'slsadownloadurl'} = "$BSConfig::sourcepublish_downloadurl/_slsa";
+      } elsif ($BSConfig::api_url) {
+	$binfo->{'slsadownloadurl'} = $BSConfig::api_url;
+      }
+    }
   }
   $ctx->writejob($job, $binfo, $reason);
 
@@ -1315,7 +1330,7 @@ sub metacheck {
     return ('scheduled', [ @$data, { 'explain' => 'retrying bad build' } ]);
   }
   if (join('\n', @meta) eq join('\n', @$new_meta)) {
-    if (($buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product') && $ctx->{'relsynctrigger'}->{$packid}) {
+    if (($buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product' || $buildtype eq 'docker') && $ctx->{'relsynctrigger'}->{$packid}) {
       if ($ctx->{'verbose'}) {
         print "      - $packid ($buildtype)\n";
         print "        rebuild counter sync\n";
@@ -1327,7 +1342,7 @@ sub metacheck {
     return ('done');
   }
   my $repo = $ctx->{'repo'};
-  if ($buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product') {
+  if ($buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product' || $buildtype eq 'docker') {
     my $rebuildmethod = $repo->{'rebuild'} || 'transitive';
     if ($rebuildmethod eq 'local') {
       #print "      - $packid ($buildtype)\n";

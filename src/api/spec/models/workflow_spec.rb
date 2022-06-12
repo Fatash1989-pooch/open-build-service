@@ -6,11 +6,14 @@ RSpec.describe Workflow, type: :model, vcr: true do
   let!(:workflow_run) { create(:workflow_run, token: token) }
 
   subject do
-    described_class.new(workflow_instructions: yaml, scm_webhook: ScmWebhook.new(payload: extractor_payload), token: token, workflow_run_id: workflow_run.id)
+    described_class.new(workflow_instructions: yaml, scm_webhook: ScmWebhook.new(payload: extractor_payload), token: token, workflow_run: workflow_run)
   end
 
   describe '#call' do
-    let(:yaml) { { 'steps' => [{ 'branch_package' => { 'source_project' => 'test-project', 'source_package' => 'test-package', 'target_project' => 'test-target-project' } }] } }
+    let(:yaml) do
+      { 'steps' => [{ 'branch_package' => { 'source_project' => 'test-project', 'source_package' => 'test-package', 'target_project' => 'test-target-project',
+                                            'target_package' => 'test-target-package' } }] }
+    end
 
     context 'PR was reopened' do
       let(:extractor_payload) do
@@ -42,11 +45,42 @@ RSpec.describe Workflow, type: :model, vcr: true do
         }
       end
       let!(:target_project) { create(:project, name: 'test-target-project:openSUSE:open-build-service:PR-4', maintainer: user) }
+      let!(:target_package) { create(:package, name: 'test-target-package', project: target_project) }
 
-      before { login user }
+      context 'we are dealing with a branch package step' do
+        before { login user }
 
-      it 'removes the target project' do
-        expect { subject.call }.to change(Project, :count).from(2).to(1)
+        it 'removes the target project' do
+          expect { subject.call }.to change(Project, :count).from(2).to(1)
+        end
+
+        it 'deletes event subscriptions' do
+          EventSubscription.create!(channel: 'scm', token: token, receiver_role: 'maintainer', eventtype: 'Event::BuildFail', package: target_package)
+          expect { subject.call }.to change(EventSubscription, :count).from(1).to(0)
+        end
+      end
+
+      context 'when we are dealing with a configure project step' do
+        let(:yaml) do
+          { 'steps' => [
+            {
+              'configure_repositories' => {
+                'project' => 'test-target-project'
+              }
+            }
+          ] }
+        end
+
+        before { login user }
+
+        it 'does not remove the target project' do
+          expect { subject.call }.not_to change(Project, :count)
+        end
+
+        it 'does not delete event subscriptions' do
+          EventSubscription.create!(channel: 'scm', token: token, receiver_role: 'maintainer', eventtype: 'Event::BuildFail', package: target_package)
+          expect { subject.call }.not_to change(EventSubscription, :count)
+        end
       end
     end
 
@@ -161,7 +195,7 @@ RSpec.describe Workflow, type: :model, vcr: true do
           scm: 'github',
           event: 'push',
           ref: 'refs/tags/release_abc',
-          target_branch: 'master'
+          target_branch: '9e0ea1fd99c9000cbb8b8c9d28763d0ddace0b65'
         }
       end
 
@@ -184,7 +218,7 @@ RSpec.describe Workflow, type: :model, vcr: true do
           scm: 'gitlab',
           event: 'Tag Push Hook',
           ref: 'refs/tags/release_abc',
-          target_branch: 'master'
+          target_branch: '9e0ea1fd99c9000cbb8b8c9d28763d0ddace0b65'
         }
       end
 
@@ -372,7 +406,7 @@ RSpec.describe Workflow, type: :model, vcr: true do
       end
 
       # This example requires VCR
-      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
+      it { expect { subject.call }.not_to change(WorkflowArtifactsPerStep, :count) }
     end
 
     context 'with step with invalid intructions' do
@@ -385,7 +419,7 @@ RSpec.describe Workflow, type: :model, vcr: true do
       end
 
       # This example requires VCR
-      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
+      it { expect { subject.call }.not_to change(WorkflowArtifactsPerStep, :count) }
     end
 
     context 'with step with invalid project name' do
@@ -400,7 +434,7 @@ RSpec.describe Workflow, type: :model, vcr: true do
       end
 
       # This example requires VCR
-      it { expect { subject.call }.to change(WorkflowArtifactsPerStep, :count).by(0) }
+      it { expect { subject.call }.not_to change(WorkflowArtifactsPerStep, :count) }
     end
   end
 

@@ -32,6 +32,7 @@ use POSIX;
 use Data::Dumper;
 use Digest;
 use Digest::MD5 ();
+use Digest::SHA ();
 use XML::Structured ':bytes';
 use Build;
 use Storable;
@@ -465,6 +466,141 @@ sub signhelm {
   writestr("$jobdir/$chart.prov", undef, $prov_signed);
 }
 
+sub dsse_pae {
+  my ($type, $payload) = @_;
+  return sprintf("DSSEv1 %d %s %d ", length($type), $type, length($payload))."$payload";
+}
+
+
+my $slsa_json_template = {
+  '_order' => [ '_type', 'subject', 'predicateType', 'predicate' ],
+  'subject' => {
+    '_order' => [ 'name', 'digest' ],
+  },
+  'predicate' => {
+    '_order' => [ 'builder', 'buildType', 'invocation', 'buildConfig', 'metadata', 'materials' ],
+    'invocation' => {
+      '_order' => [ 'configSource', 'parameters', 'environment' ],
+      'configSource' => {
+	'_order' => [ 'uri', 'digest', 'entryPoint' ],
+      }
+    },
+    'metadata' => {
+      '_order' => [ 'buildInvocationId', 'buildStartedOn', 'buildFinishedOn', 'completeness', 'reproducible' ],
+      'completeness' => {
+	'_order' => [ 'parameters', 'environment', 'materials' ],
+	'*' => 'bool',
+      },
+      'reproducible' => 'bool',
+    },
+    'materials' => {
+      '_order' => ['uri', 'digest' ],
+    }
+  }
+};
+
+sub provenance_tojson {
+  my ($provenance) = @_;
+  require Build::SimpleJSON;
+  return Build::SimpleJSON::unparse($provenance,  'template' => $slsa_json_template, 'keepspecial' => 1);
+}
+
+sub signslaprovenance {
+  my ($jobstatus, $signfile, $jobdir, $refprpa, @signargs) = @_;
+  # for now just do reposerver communication
+  return unless -e $signfile && -s _ < 1000000000;
+  my $provenance_json = readstr($signfile);
+  # not user generated, so we die() on error
+  my $provenance = JSON::XS::decode_json($provenance_json);
+  die unless $provenance && ref($provenance) eq 'HASH';
+  my $alreadysigned;
+  if ($provenance->{'payload'}) {
+    $alreadysigned = 1;
+    die("bad payload type\n") unless $provenance->{'payloadType'} eq 'application/vnd.in-toto+json';
+    $provenance_json = MIME::Base64::decode_base64($provenance->{'payload'});
+    $provenance = JSON::XS::decode_json($provenance_json);
+  }
+  die("no predicate in provenance file?\n") unless ref($provenance->{'predicate'}) eq 'HASH';
+
+  # pin all binaries from the materials
+  my $materials = $provenance->{'predicate'}->{'materials'};
+  die("no materials in provenance file?\n") unless ref($materials) eq 'ARRAY';
+  my %todo;
+  for my $material (@$materials) {
+    die("bad material in provenance file?\n") unless ref($material) eq 'HASH';
+    my $uri = $material->{'uri'};
+    die("bad material uri in provenance file?\n") unless $uri;
+    $uri = BSHTTP::urldecode($uri);
+    # .../_slsa/<proj>/<repo>/<arch>/<filename>/<digest>
+    next unless $uri =~ /\/_?slsa\/([^\/]+)\/([^\/]+)\/([^\/]+)\/([^\/]+)\/([^\/]+)$/s;
+    my $prpa = "$1/$2/$3";
+    my $bin = $4;
+    die("material with bad digest\n") unless ref($material->{'digest'}) eq 'HASH' && $material->{'digest'}->{'sha256'};
+    $todo{$prpa}->{$material->{'digest'}->{'sha256'}} = $bin;
+  }
+  if ($signfile =~ /\/_slsa_provenance.json$/) {
+    # also send the config if we have one
+    my $config = readstr("$jobdir/_slsa_provenance.config", 1);
+    if (!defined $config) {
+      my $buildinfo = readxml("$jobdir/_buildenv", $BSXML::buildinfo, 1) || {};
+      $config = $buildinfo->{'config'};
+    }
+    if (defined($config)) {
+      my $digest = Digest::SHA::sha256_hex($config);
+      $todo{'_config'}->{$digest} = $config;
+    }
+  }
+  
+  my $param = {
+    'uri' => "$BSConfig::srcserver/slsa",
+    'request' => 'POST',
+    'data' => BSUtil::tostorable(\%todo),
+  };
+  eval { BSRPC::rpc($param, undef, "cmd=addrefs", "prpa=$refprpa") };
+  $jobstatus->{'result'} = 'rebuild' if $@ && $@ =~ /^404/;	# rebuild if a binary is missing
+  die($@) if $@;
+
+  # fixup digests in subject list
+  my $patched;
+  for my $subject (@{$provenance->{'subject'} || []}) {
+    next unless $subject->{'digest'} && $subject->{'name'} =~ /\.rpm$/;
+    next unless -e "$jobdir/$subject->{'name'}";
+    my $newdigest = sha256file("$jobdir/$subject->{'name'}");
+    next if $subject->{'digest'}->{'sha256'} eq $newdigest;
+    $subject->{'digest'}->{'sha256'} = $newdigest;
+    $patched = 1;		# need to rewrite file
+  }
+  if ($patched) {
+    $provenance_json = provenance_tojson($provenance);
+    $alreadysigned = 0;		# no longer signed
+  }
+
+  # now sign the provenance statement
+  if (!$alreadysigned) {
+    # hack: prepend _ to payloadType so it comes first
+    my $envelope = {
+      '_payloadType' => 'application/vnd.in-toto+json',
+      'payload' => MIME::Base64::encode_base64($provenance_json, ''),
+    };
+    my $dsse = dsse_pae($envelope->{'_payloadType'}, $envelope->{'payload'});
+    my $sig = BSUtil::xsystem($dsse, $BSConfig::sign, @signargs, '-D');
+    push @{$envelope->{'signatures'}}, {'sig' => MIME::Base64::encode_base64($sig)};
+    my $envelope_json = JSON::XS->new->utf8->canonical->encode($envelope);;
+    $envelope_json =~ s/_payloadType/payloadType/;
+    writestr("$jobdir/.slsa_provenance.sIgN$$", $signfile, $envelope_json);
+  }
+}
+
+sub sha256file {
+  my ($file) = @_;
+  my $fd;
+  open($fd, '<', $file) || die("$file: $!\n");
+  my $ctx = Digest->new('SHA-256');
+  $ctx->addfile($fd);
+  close $fd;
+  return $ctx->hexdigest();
+}
+
 sub fixup_sha256_checksum {
   my ($jobdir, $shafile, $isofile) = @_;
   return if ((-s "$jobdir/$shafile") || 0) > 65536;
@@ -478,12 +614,9 @@ sub fixup_sha256_checksum {
     $sha =~ s/.*?\n\n//s;
     $sha =~ s/-----BEGIN PGP SIGNATURE-----.*//s;
   }
-  local *F;
-  open(F, '<', "$jobdir/$isofile") || return;
-  my $ctx = Digest->new('SHA-256');
-  $ctx->addfile(\*F);
-  close F;
-  $sha =~ s/^.{64}(  (?:.*\/)?\Q$isofile\E)$/$ctx->hexdigest().$1/em;
+  return unless -e "$jobdir/$isofile";
+  my $newdigest = sha256file("$jobdir/$isofile");
+  $sha =~ s/^.{64}(  (?:.*\/)?\Q$isofile\E)$/$newdigest$1/m;
   writestr("$jobdir/$shafile", undef, $sha);
 }
 
@@ -614,7 +747,7 @@ sub signjob {
   my $projid = $info->{'project'};
   $prpa_stats = "$projid/$info->{'repository'}/$arch";
   my @files = sort(ls($jobdir));
-  my @signfiles = grep {/\.(?:d?rpm|sha256|iso|pkg\.tar\.gz|pkg\.tar\.xz|pkg\.tar\.zst|rsasign|AppImage|appx|helminfo)$/} @files;
+  my @signfiles = grep {$_ eq '_slsa_provenance.json' || /\.(?:d?rpm|sha256|iso|pkg\.tar\.gz|pkg\.tar\.xz|pkg\.tar\.zst|rsasign|AppImage|appx|helminfo)$/} @files;
   my $needpubkey;
   if (grep {$_ eq '.kiwitree_tosign'} @files) {
     for my $f (split("\n", readstr("$jobdir/.kiwitree_tosign"))) {
@@ -634,7 +767,9 @@ sub signjob {
   if (@signfiles) {
     my $needcert = grep {/\.appx$/} @signfiles;
     $needpubkey ||= grep {/\.iso$/} @signfiles;
+    $needpubkey = 1 if $info->{'file'} eq '_aggregate' && grep {/\.d?rpm$/} @signfiles;
     my ($algo, $signkey, $pubkey, $cert) = getsignkey($projid, $needpubkey, $needcert);
+    my $pubkey_create_time;
     my @signargs;
     push @signargs, '--project', $projid if $BSConfig::sign_project;
     if ($signkey) {
@@ -660,8 +795,18 @@ sub signjob {
 
     push @signargs, '-S', "$jobdir/.checksums" if !$followupfile && $sign_supports_S;
 
+    if (grep {$_ eq '_slsa_provenance.json'} @signfiles) {
+      # do this last as we need to update the digests in the subject list
+      @signfiles = grep {$_ ne '_slsa_provenance.json'} @signfiles;
+      push @signfiles, '_slsa_provenance.json';
+    }
+
     eval {
       for my $signfile (@signfiles) {
+	if ($signfile eq '_slsa_provenance.json') {
+	  signslaprovenance($jobstatus, "$jobdir/$signfile", $jobdir, "$projid/$info->{'repository'}/$info->{'arch'}", @signargs);
+	  next;
+	}
 	if ($signfile =~ /\.helminfo$/) {
 	  signhelm($jobstatus, "$jobdir/$signfile", $jobdir, @signargs);
 	  next;
@@ -693,6 +838,20 @@ sub signjob {
 	  $signtime = $sigdata->{'signtime'};
 	  $signissuer = $sigdata->{'issuer'};
 	  rpmdelsign("$jobdir/$signfile");
+	  if ($signtime && $pubkey) {
+	    if (!defined($pubkey_create_time)) {
+	      eval {
+		$pubkey_create_time = 0;
+		my $keyinfo = BSPGP::pk2times(BSPGP::unarmor($pubkey));
+		$pubkey_create_time = $keyinfo->{'key_create'} || 0 if $keyinfo;
+	      };
+	      print "pubkey creation time: $pubkey_create_time\n";
+	    }
+	    if ($signtime < $pubkey_create_time) {
+	      print "clamping signtime $signtime to $pubkey_create_time\n";
+	      $signtime = $pubkey_create_time;
+	    }
+	  }
 	  print "using signtime $signtime\n" if $signtime;
 	}
 	my @signmode;

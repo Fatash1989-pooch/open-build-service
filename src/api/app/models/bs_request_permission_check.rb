@@ -109,6 +109,11 @@ class BsRequestPermissionCheck
     if opts[:newstate].in?(['new', 'review', 'revoked', 'superseded']) && req.creator == User.session!.login
       # request creator can reopen, revoke or supersede a request which was declined
       permission_granted = true
+    elsif opts[:newstate] == 'revoked' && req.creator == opts[:override_creator]
+      # NOTE: request should be revoked if project is removed.
+      # override_creator is needed if the logged in user is different than the creator of the request
+      # at the time of removing the project.
+      permission_granted = true
     elsif req.state == :declined && opts[:newstate].in?(['new', 'review']) && (req.commenter == User.session!.login || user_is_staging_manager)
       # people who declined a request shall also be able to reopen it
 
@@ -123,6 +128,15 @@ class BsRequestPermissionCheck
       set_permissions_for_action(action, accept_check ? 'accepted' : opts[:newstate])
 
       check_newstate_action!(action, opts)
+
+      # TODO: Get the relevant project attribute, from the target project or target package. Retrieve the accepter and check if it's the same person than the creator. And fail if true
+      target_package = Package.get_by_project_and_name(action.target_project, action.target_package) if Package.exists_by_project_and_name(action.target_project, action.target_package)
+      target_project = Project.find_by_name(action.target_project) if action.target_project
+      if accept_check
+        cannot_accept_request = target_package&.find_attribute('OBS', 'CreatorCannotAcceptOwnRequests').present?
+        cannot_accept_request ||= target_project&.find_attribute('OBS', 'CreatorCannotAcceptOwnRequests').present?
+        raise BsRequest::Errors::CreatorCannotAcceptOwnRequests if cannot_accept_request && User.session!.login == req.creator
+      end
 
       # abort immediatly if we want to write and can't
       next unless accept_check && !@write_permission_in_this_action

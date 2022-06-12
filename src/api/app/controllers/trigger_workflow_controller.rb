@@ -1,6 +1,7 @@
 class TriggerWorkflowController < TriggerController
   # We don't need to validate that the body of the request is XML. We receive JSON
   skip_before_action :validate_xml_request, :set_project_name, :set_package_name, :set_project, :set_package, :set_object_to_authorize, :set_multibuild_flavor
+
   before_action :set_scm_event
   before_action :abort_trigger_if_ignored_pull_request_action
   before_action :create_workflow_run
@@ -11,13 +12,15 @@ class TriggerWorkflowController < TriggerController
     @token.user.run_as do
       validation_errors = @token.call(workflow_run: @workflow_run, scm_webhook: @scm_webhook)
 
-      if validation_errors.none?
-        @workflow_run.update(status: 'success', response_body: render_ok)
-      else
-        @workflow_run.update_to_fail(render_error(status: 400, message: validation_errors.to_sentence))
+      unless @workflow_run.status == 'fail' # The SCMStatusReporter might already set the status to 'fail', lets not overwrite it
+        if validation_errors.none?
+          @workflow_run.update(status: 'success', response_body: render_ok)
+        else
+          @workflow_run.update_as_failed(render_error(status: 400, message: validation_errors.to_sentence))
+        end
       end
     rescue APIError => e
-      @workflow_run.update_to_fail(render_error(status: e.status, errorcode: e.errorcode, message: e.message))
+      @workflow_run.update_as_failed(render_error(status: e.status, errorcode: e.errorcode, message: e.message))
     end
   end
 
@@ -31,7 +34,13 @@ class TriggerWorkflowController < TriggerController
   def validate_scm_event
     return if @gitlab_event.present? || @github_event.present?
 
-    @workflow_run.update_to_fail(render_error(status: 400, errorcode: 'bad_request', message: 'Could not find the required HTTP request headers X-GitHub-Event or X-Gitlab-Event'))
+    @workflow_run.update_as_failed(
+      render_error(
+        status: 400,
+        errorcode: 'bad_request',
+        message: 'Only GitHub and GitLab are supported. Could not find the required HTTP request headers X-GitHub-Event or X-Gitlab-Event.'
+      )
+    )
   end
 
   def scm
@@ -58,6 +67,8 @@ class TriggerWorkflowController < TriggerController
   end
 
   def create_workflow_run
+    raise Trigger::Errors::InvalidToken, 'Wrong token type. Please use workflow tokens only.' unless @token.is_a?(Token::Workflow)
+
     request_headers = request.headers.to_h.keys.map { |k| "#{k}: #{request.headers[k]}" if k.match?(/^HTTP_/) }.compact.join("\n")
     @workflow_run = @token.workflow_runs.create(request_headers: request_headers, request_payload: request.body.read)
   end

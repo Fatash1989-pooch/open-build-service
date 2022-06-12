@@ -53,7 +53,6 @@ use BSHandoff;
 use BSWatcher ':https';
 use BSXPath;
 use BSStdServer;
-use BSSrcdiff;
 use Build;
 use BSPGP;
 use BSSrcrep;
@@ -74,6 +73,7 @@ use BSSrcServer::Link;
 use BSSrcServer::Service;
 use BSSrcServer::Product;
 use BSSrcServer::Multibuild;
+use BSSrcServer::Srcdiff;
 use BSSrcServer::Blame;
 use BSSrcServer::Registry;
 use BSSrcServer::Signkey;
@@ -2363,8 +2363,13 @@ sub getpackagehistory {
     }
   }
   my $filter;
-  if ($cgi->{'rev'}) {
-    $filter = sub { return $cgi->{'rev'} eq $_[0]->{'rev'} || $cgi->{'rev'} eq $_[0]->{'srcmd5'} ? 1 : 0 };
+  if ($cgi->{'rev'} && $cgi->{'rev'} =~ /^[0-9a-f]{32}/) {
+    # get all revisions with this srcmd5
+    $filter = sub { return $cgi->{'rev'} eq $_[0]->{'srcmd5'} ? 1 : 0 };
+  } elsif ($cgi->{'rev'}) {
+    # get a specific revision
+    $filter = sub { return $cgi->{'rev'} eq $_[0]->{'rev'} ? 1 : 0 };
+    $cgi->{'limit'} = 1 unless defined $cgi->{'limit'};
   }
   for (BSFileDB::fdb_getall_reverse($revfile, $srcrevlay, $cgi->{'limit'}, $filter)) {
     $_->{'comment'} = str2utf8xml($_->{'comment'}) if $_->{'comment'};
@@ -3211,12 +3216,12 @@ sub sourcediff {
   }
   if ($view eq 'xml') {
     if (!$cgi->{'onlyissues'}) {
-      $xmlret->{'files'} = { 'file' => BSSrcdiff::datadiff($ofn, $ofiles, $fn, $files, %opts) };
+      $xmlret->{'files'} = { 'file' => BSSrcServer::Srcdiff::datadiff($ofn, $ofiles, $fn, $files, %opts) };
     }
     if ($cgi->{'withissues'}) {
       my $trackers = readxml("$BSConfig::bsdir/issuetrackers.xml", $BSXML::issue_trackers, 1) || {};
       $opts{'trackers'} = $trackers->{'issue-tracker'} || [];
-      $xmlret->{'issues'} = { 'issue' => BSSrcdiff::issuediff($ofn, $ofiles, $fn, $files, %opts) };
+      $xmlret->{'issues'} = { 'issue' => BSSrcServer::Srcdiff::issuediff($ofn, $ofiles, $fn, $files, %opts) };
     }
     BSUtil::data2utf8xml($xmlret);
     $d = XMLout($BSXML::sourcediff, $xmlret);
@@ -3226,9 +3231,9 @@ sub sourcediff {
     $opts{'nodecomp'} = 1;
     $opts{'oldrevision'} = $orev->{'rev'} if defined $orev->{'rev'};
     $opts{'newrevision'} = $rev->{'rev'} if defined $rev->{'rev'};
-    $d = BSSrcdiff::unifieddiff($ofn, $ofiles, $fn, $files, %opts);
+    $d = BSSrcServer::Srcdiff::unifieddiff($ofn, $ofiles, $fn, $files, %opts);
   } else {
-    $d = BSSrcdiff::srcdiff($ofn, $ofiles, $fn, $files, %opts);
+    $d = BSSrcServer::Srcdiff::srcdiff($ofn, $ofiles, $fn, $files, %opts);
   }
   unlink($_) for keys %xobscpio;
   if ($cn) {
@@ -3681,6 +3686,62 @@ sub update_link_in_service {
   return $servicemark;
 }
 
+
+sub sourcecopy_update_baserev {
+  my ($cgi, $projid, $packid, $oprojid, $opackid, $oldbaserev, $newbaserev, $vrevbump) = @_;
+  my $latestorev = getrev($oprojid, $opackid);
+  my $latestlinkinfo = {};
+  my $latestfiles = BSRevision::lsrev($latestorev, $latestlinkinfo);
+  return unless $latestfiles->{'_link'};
+  my $latestl = BSRevision::revreadxml($latestorev, '_link', $latestfiles->{'_link'}, $BSXML::link, 1);
+  my $latestisbranch = grep {(keys %$_)[0] eq 'branch'} @{$latestl->{'patches'}->{''} || []};
+  return unless $latestisbranch && $latestl->{'baserev'} eq $oldbaserev;
+  $latestl->{'baserev'} = $newbaserev;
+  $latestl->{'patches'}->{''} = [ { 'branch' => undef} ]; # work around xml problem
+  if ($latestl->{'missingok'} &&
+    (defined($latestl->{'project'}) ? $latestl->{'project'} : $oprojid) eq $projid &&
+    (defined($latestl->{'package'}) ? $latestl->{'package'} : $opackid) eq $packid) {
+    eval {
+      BSSrcServer::Access::checksourceaccess($projid, $packid);
+      delete $latestl->{'missingok'};
+    };
+  }
+  mkdir_p($uploaddir);
+  writexml("$uploaddir/$$", undef, $latestl, $BSXML::link);
+  $latestfiles->{'_link'} = BSSrcrep::addfile($oprojid, $opackid, "$uploaddir/$$", '_link');
+  if ($vrevbump) {
+    $cgi->{'vrev'} = $latestorev->{'vrev'};
+    $cgi->{'vrev'} =~ s/(\d+)$/$1 + $vrevbump/e;
+  }
+  my $servicemark = update_link_in_service($latestorev, $latestfiles, $latestlinkinfo->{'xservicemd5'}, 1);
+  addrev({ %$cgi, 'user' => 'buildservice-autocommit', 'comment' => 'baserev update by copy to link target', 'servicemark' => $servicemark }, $oprojid, $opackid, $latestfiles);
+}
+
+sub sourcecopy_update_link {
+  my ($cgi, $projid, $packid, $oprojid, $opackid, $oldsrcmd5, $vrevbump) = @_;
+  my $latestorev = getrev($oprojid, $opackid);
+  return if $latestorev->{'srcmd5'} ne $oldsrcmd5;
+  # simplify link
+  my $latestlinkinfo = {};
+  my $latestfiles = BSRevision::lsrev($latestorev, $latestlinkinfo);
+  return unless $latestfiles->{'_link'};
+  my $latestl = BSRevision::revreadxml($latestorev, '_link', $latestfiles->{'_link'}, $BSXML::link, 1);
+  my $latestisbranch = grep {(keys %$_)[0] eq 'branch'} @{$latestl->{'patches'}->{''} || []};
+  return if $latestisbranch;
+  delete $latestl->{'patches'};
+  delete $latestl->{'baserev'};
+  mkdir_p($uploaddir);
+  writexml("$uploaddir/$$", undef, $latestl, $BSXML::link);
+  my $ofiles = {};
+  $ofiles->{'_link'} = BSSrcrep::addfile($oprojid, $opackid, "$uploaddir/$$", '_link');
+  if ($vrevbump) {
+    $cgi->{'vrev'} = $latestorev->{'vrev'};
+    $cgi->{'vrev'} =~ s/(\d+)$/$1 + $vrevbump/e;
+  }
+  my $servicemark = update_link_in_service($latestorev, $ofiles, $latestlinkinfo->{'xservicemd5'}, 0);
+  addrev({ %$cgi, 'user' => 'buildservice-autocommit', 'comment' => 'auto commit by copy to link target', 'servicemark' => $servicemark }, $oprojid, $opackid, $ofiles);
+}
+
 sub sourcecopy {
   my ($cgi, $projid, $packid) = @_;
   die("illegal rev parameter\n") if $cgi->{'rev'} && $cgi->{'rev'} ne 'upload' && $cgi->{'rev'} ne 'repository';
@@ -3763,6 +3824,28 @@ sub sourcecopy {
     }
   }
 
+  if (!$files->{'_link'} && !$cgi->{'dontupdatesource'} && !$cgi->{'rev'} && $linkinfo->{'lsrcmd5'} && !$cgi->{'freezelink'}) {
+    eval {
+      my $uxrev = getrev($oprojid, $opackid, $linkinfo->{'lsrcmd5'});
+      my $uxfiles = BSRevision::lsrev($uxrev);
+      my $olink = BSRevision::revreadxml($uxrev, '_link', $uxfiles->{'_link'}, $BSXML::link, 1);
+      if ($olink) {
+	my $lprojid = $oprojid;
+	my $lpackid = $opackid;
+	my $lrev = $olink->{'rev'};
+	$lprojid = $olink->{'project'} if exists $olink->{'project'};
+	$lpackid = $olink->{'package'} if exists $olink->{'package'};
+	if ($lprojid eq $projid && $lpackid eq $packid) {
+	  $lrev = getrev($lprojid, $lpackid, $lrev);
+	  $autosimplifylink_lrev = { %$lrev };
+	  $autosimplifylink = $olink;
+	  $orev_srcmd5 = $uxrev->{'srcmd5'};
+	}
+      }
+    };
+    warn("sourcecopy unexpand: $@") if $@;
+  }
+
   die("400 freezelink: origin provides no link\n") if $cgi->{'freezelink'} && !$freezelinkfiles;
 
   my $oldvrev = $orev->{'vrev'};
@@ -3838,67 +3921,17 @@ sub sourcecopy {
       # FIXME: this is a gross hack...
       # we should not need to update the baserev, instead we should change
       # the way branches get applied
-
       my $ofiles = BSRevision::lsrev($orev);
       delete $ofiles->{'_link'};
       BSSrcrep::copyfiles($projid, $packid, $oprojid, $opackid, $ofiles);
-      my $newbase = BSSrcrep::addmeta($projid, $packid, $ofiles);
-      if ($autosimplifylink->{'baserev'} ne $newbase) {
-	eval {
-          my $latestorev = getrev($oprojid, $opackid);
-	  my $latestlinkinfo = {};
-          my $latestfiles = BSRevision::lsrev($latestorev, $latestlinkinfo);
-          if ($latestfiles->{'_link'}) {
-	    my $latestl = BSRevision::revreadxml($latestorev, '_link', $latestfiles->{'_link'}, $BSXML::link, 1);
-	    my $latestisbranch = grep {(keys %$_)[0] eq 'branch'} @{$latestl->{'patches'}->{''} || []};
-	    if ($latestisbranch && $latestl->{'baserev'} eq $autosimplifylink->{'baserev'}) {
-	      $latestl->{'baserev'} = $newbase;
-	      $latestl->{'patches'}->{''} = [ { 'branch' => undef} ]; # work around xml problem
-	      if ($latestl->{'missingok'} &&
-		(defined($latestl->{'project'}) ? $latestl->{'project'} : $oprojid) eq $projid &&
-		(defined($latestl->{'package'}) ? $latestl->{'package'} : $opackid) eq $packid) {
-		eval {
-	          BSSrcServer::Access::checksourceaccess($projid, $packid);
-		  delete $latestl->{'missingok'};
-		};
-	      }
-	      mkdir_p($uploaddir);
-	      writexml("$uploaddir/$$", undef, $latestl, $BSXML::link);
-              $latestfiles->{'_link'} = BSSrcrep::addfile($oprojid, $opackid, "$uploaddir/$$", '_link');
-	      if ($vrevbump) {
-		$cgi->{'vrev'} = $latestorev->{'vrev'};
-		$cgi->{'vrev'} =~ s/(\d+)$/$1 + $vrevbump/e;
-	      }
-              my $servicemark = update_link_in_service($latestorev, $latestfiles, $latestlinkinfo->{'xservicemd5'}, 1);
-              addrev({ %$cgi, 'user' => 'buildservice-autocommit', 'comment' => 'baserev update by copy to link target', 'servicemark' => $servicemark }, $oprojid, $opackid, $latestfiles);
-	    }
-	  }
-	};
-        warn($@) if $@;
+      my $newbaserev = BSSrcrep::addmeta($projid, $packid, $ofiles);
+      if ($autosimplifylink->{'baserev'} ne $newbaserev) {
+	eval { sourcecopy_update_baserev($cgi, $projid, $packid, $oprojid, $opackid, $autosimplifylink->{'baserev'}, $newbaserev, $vrevbump) };
+        warn("sourcecopy update baserev: $@") if $@;
       }
     } else {
-      eval {
-        my $latestorev = getrev($oprojid, $opackid);
-        if ($latestorev->{'srcmd5'} eq $orev->{'srcmd5'}) {
-          # simplify link
-	  my $latestlinkinfo = {};
-          my $latestfiles = BSRevision::lsrev($latestorev, $latestlinkinfo);
-          my $nl = { %$autosimplifylink };
-          delete $nl->{'patches'};
-          delete $nl->{'baserev'};
-	  mkdir_p($uploaddir);
-          writexml("$uploaddir/$$", undef, $nl, $BSXML::link);
-          my $ofiles = {};
-          $ofiles->{'_link'} = BSSrcrep::addfile($oprojid, $opackid, "$uploaddir/$$", '_link');
-	  if ($vrevbump) {
-	    $cgi->{'vrev'} = $latestorev->{'vrev'};
-	    $cgi->{'vrev'} =~ s/(\d+)$/$1 + $vrevbump/e;
-	  }
-          my $servicemark = update_link_in_service($latestorev, $ofiles, $latestlinkinfo->{'xservicemd5'}, 0);
-          addrev({ %$cgi, 'user' => 'buildservice-autocommit', 'comment' => 'auto commit by copy to link target', 'servicemark' => $servicemark }, $oprojid, $opackid, $ofiles);
-        }
-      };
-      warn($@) if $@;
+      eval { sourcecopy_update_link($cgi, $projid, $packid, $oprojid, $opackid, $orev->{'srcmd5'}, $vrevbump) };
+      warn("sourcecopy update link: $@") if $@;
     }
     delete $cgi->{'vrev'} if $vrevbump;
   }
@@ -6784,16 +6817,16 @@ sub external_notification_sourcepublish {
     }
 
     if ($BSConfig::sourcepublish_blocklist) {
-      my $xml = readxml("$projectsdir/$project.xml", $BSXML::proj, 1);
-      die("400 Unable to parse $project.xml\n") unless $xml;
-      if ( {$xml->{'kind'} || ''} eq 'maintenance_release' ) {
-        if (grep {$package =~ /^$_\./} @$BSConfig::sourcepublish_blocklist) {
+      my $proj = readxml("$projectsdir/$project.xml", $BSXML::proj, 1);
+      die("400 Unable to parse $project.xml\n") unless $proj;
+      if ( ($proj->{'kind'} || '') eq 'maintenance_release' ) {
+        if (grep {$package eq $_ || $package =~ /^\Q$_\E\./} @$BSConfig::sourcepublish_blocklist) {
           BSUtil::printlog("block list hit for $package in maintenance release project");
-          return;
+          next;
         }
       } elsif (grep {$package eq $_} @$BSConfig::sourcepublish_blocklist) {
         BSUtil::printlog("block list hit for $package");
-        return;
+        next;
       }
     }
 
@@ -6909,7 +6942,7 @@ sub checkconstraints {
     $param->{'chunked'} = 1;
   } else {
       my $rev = getrev($cgi->{'project'}, $cgi->{'package'}, $cgi->{'rev'});
-      my $files = BSRevision::lsrev($rev);
+      my $files = lsrev_expanded($rev);
       if ($files->{'_constraints'}) {
         $param->{'data'} = BSRevision::revreadstr($rev, '_constraints', $files->{'_constraints'});
       }
@@ -7272,6 +7305,53 @@ sub sigstore_forward {
 
 ####################################################################
 
+sub slsa_addrefs {
+  my ($cgi, $refprpa) = @_;
+  my $refs = BSUtil::fromstorable(BSServer::read_data(1000000000));
+  my %servers;
+  for my $prpa (sort keys %$refs) {
+    my ($projid) = split('/', $prpa);
+    $projid = (split('/', $refprpa))[0] if $prpa eq '_config';	# keep extra config data
+    my $proj = BSRevision::readproj_local($projid, 1);
+    $proj = BSSrcServer::Remote::remoteprojid($projid) if !$proj || $proj->{'remoteurl'};
+    if ($proj->{'remoteurl'}) {
+      # skip interconnect references for now
+      next;
+    }
+    my $reposerver = $BSConfig::partitioning ? BSSrcServer::Partition::projid2reposerver($projid) : $BSConfig::reposerver;
+    $servers{$reposerver}->{$prpa} = $refs->{$prpa};
+  }
+  for my $server (sort keys %servers) {
+    my $param = {
+      'uri' => "$server/slsa",
+      'request' => 'POST',
+      'data' => BSUtil::tostorable($servers{$server}),
+    };
+    BSRPC::rpc($param, undef, "cmd=addrefs", "prpa=$refprpa");
+  }
+  return $BSStdServer::return_ok;
+}
+
+sub slsa_getfile {
+  my ($cgi, $projid, $repoid, $arch, $filename, $digest) = @_;
+  my $proj = BSRevision::readproj_local($projid, 1);
+  $proj = BSSrcServer::Remote::remoteprojid($projid) if !$proj || $proj->{'remoteurl'};
+  if ($proj->{'remoteurl'}) {
+    die("404 no remote slsa references\n");
+  }
+  my $reposerver = $BSConfig::partitioning ? BSSrcServer::Partition::projid2reposerver($projid) : $BSConfig::reposerver;
+  my @args = BSRPC::args($cgi, 'view');
+  my $param = {
+    'uri' => "$reposerver/slsa/$projid/$repoid/$arch/$filename/$digest",
+    'ignorestatus' => 1,
+    'receiver' => \&BSServer::reply_receiver,
+  };
+  BSWatcher::rpc($param, undef, @args);
+  return undef;
+}
+
+####################################################################
+
 sub run {
   my ($conf) = @_;
   BSSrcServer::SQLite::init_publisheddb($extrepodb) if $BSConfig::published_db_sqlite;
@@ -7482,6 +7562,10 @@ my $dispatches = [
   'GET|HEAD:/registry/info.json' => \&registry_rootinfo,
   'GET|HEAD:/registry' => \&registry_version,
   'GET|HEAD:/sigstore/$...:regrepo/$sig:' => \&sigstore_forward,
+
+  # slsa
+  'POST:/slsa cmd=addrefs $prpa' => \&slsa_addrefs,
+  '/slsa/$project/$repository/$arch/$filename/$digest: view:?' => \&slsa_getfile,
 
   '/ajaxstatus' => \&getajaxstatus,
   '/serverstatus' => \&BSStdServer::serverstatus,

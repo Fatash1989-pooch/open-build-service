@@ -10,7 +10,14 @@ class EventSubscription < ApplicationRecord
     creator: 'Creator',
     watcher: 'Watching the project',
     source_watcher: 'Watching the source project',
-    target_watcher: 'Watching the target project'
+    target_watcher: 'Watching the target project',
+    any_role: 'Any role'
+  }.freeze
+  BETA_RECEIVER_ROLE_TEXTS = {
+    package_watcher: 'Watching the package',
+    source_package_watcher: 'Watching the source package',
+    target_package_watcher: 'Watching the target package',
+    request_watcher: 'Watching the request'
   }.freeze
 
   enum channel: {
@@ -30,10 +37,12 @@ class EventSubscription < ApplicationRecord
   belongs_to :group, inverse_of: :event_subscriptions, optional: true
   belongs_to :token, inverse_of: :event_subscriptions, optional: true
   belongs_to :package, optional: true
+  belongs_to :workflow_run, optional: true
 
   validates :receiver_role, inclusion: {
     in: [:maintainer, :bugowner, :reader, :source_maintainer, :target_maintainer,
-         :reviewer, :commenter, :creator, :watcher, :source_watcher, :target_watcher]
+         :reviewer, :commenter, :creator, :watcher, :source_watcher, :target_watcher,
+         :package_watcher, :target_package_watcher, :source_package_watcher, :request_watcher, :any_role]
   }
 
   scope :for_eventtype, ->(eventtype) { where(eventtype: eventtype) }
@@ -48,6 +57,16 @@ class EventSubscription < ApplicationRecord
       defaults
     end
   }
+
+  after_save :measure_changes
+
+  def self.receiver_roles_to_display(user)
+    roles = RECEIVER_ROLE_TEXTS.keys
+    # We have to show the new_watchlist subscription options to the admin in order to allow the global
+    # configuration
+    roles += BETA_RECEIVER_ROLE_TEXTS.keys if Flipper.enabled?(:new_watchlist, user) || User.possibly_nobody.is_admin?
+    roles
+  end
 
   def subscriber
     if user_id.present?
@@ -84,29 +103,36 @@ class EventSubscription < ApplicationRecord
   def self.without_disabled_or_internal_channels
     channels.keys.reject { |channel| channel == 'disabled' || channel.in?(INTERNAL_ONLY_CHANNELS) }
   end
+
+  def measure_changes
+    RabbitmqBus.send_to_bus('metrics',
+                            "event_subscription,event_type=#{eventtype},enabled=#{enabled},receiver_role=#{receiver_role},channel=#{channel} value=1")
+  end
 end
 
 # == Schema Information
 #
 # Table name: event_subscriptions
 #
-#  id            :integer          not null, primary key
-#  channel       :integer          default("disabled"), not null
-#  enabled       :boolean          default(FALSE)
-#  eventtype     :string(255)      not null
-#  payload       :text(65535)
-#  receiver_role :string(255)      not null
-#  created_at    :datetime
-#  updated_at    :datetime
-#  group_id      :integer          indexed
-#  package_id    :integer          indexed
-#  token_id      :integer          indexed
-#  user_id       :integer          indexed
+#  id              :integer          not null, primary key
+#  channel         :integer          default("disabled"), not null
+#  enabled         :boolean          default(FALSE)
+#  eventtype       :string(255)      not null
+#  payload         :text(65535)
+#  receiver_role   :string(255)      not null
+#  created_at      :datetime
+#  updated_at      :datetime
+#  group_id        :integer          indexed
+#  package_id      :integer          indexed
+#  token_id        :integer          indexed
+#  user_id         :integer          indexed
+#  workflow_run_id :integer          indexed
 #
 # Indexes
 #
-#  index_event_subscriptions_on_group_id    (group_id)
-#  index_event_subscriptions_on_package_id  (package_id)
-#  index_event_subscriptions_on_token_id    (token_id)
-#  index_event_subscriptions_on_user_id     (user_id)
+#  index_event_subscriptions_on_group_id         (group_id)
+#  index_event_subscriptions_on_package_id       (package_id)
+#  index_event_subscriptions_on_token_id         (token_id)
+#  index_event_subscriptions_on_user_id          (user_id)
+#  index_event_subscriptions_on_workflow_run_id  (workflow_run_id)
 #

@@ -4,7 +4,8 @@ module Event
     self.message_bus_routing_key = 'request.comment'
     self.description = 'New comment for request created'
     payload_keys :request_number
-    receiver_roles :source_maintainer, :target_maintainer, :creator, :reviewer, :source_watcher, :target_watcher
+    receiver_roles :source_maintainer, :target_maintainer, :creator, :reviewer, :source_watcher, :target_watcher,
+                   :source_package_watcher, :target_package_watcher, :request_watcher
 
     def subject
       req = BsRequest.find_by_number(payload['number'])
@@ -25,7 +26,7 @@ end
 #
 # Table name: events
 #
-#  id          :integer          not null, primary key
+#  id          :bigint           not null, primary key
 #  eventtype   :string(255)      not null, indexed
 #  mails_sent  :boolean          default(FALSE), indexed
 #  payload     :text(65535)

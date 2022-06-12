@@ -610,13 +610,13 @@ sub createrepo_rpmmd {
   }
   my $repoinfo = $data->{'repoinfo'};
   # create generic rpm-md meta data
-  # --update requires a newer createrepo version, tested with version 0.4.10
   my @createrepoargs;
   push @createrepoargs, '--changelog-limit', '20';
   push @createrepoargs, map { ('--repo', $_ ) } @repotags;
   push @createrepoargs, '--content', 'debug' if $data->{'dbgsplit'};
   push @createrepoargs, '--content', 'update' if ($repoinfo->{'projectkind'} || '') eq 'maintenance_incident';
   push @createrepoargs, '--content', 'update' if ($repoinfo->{'projectkind'} || '') eq 'maintenance_release';
+  push @createrepoargs, '--filelists_ext' if $options{'filelists_ext'};
   my @legacyargs;
   if ($options{'legacy'}) {
     push @legacyargs, '--simple-md-filenames', '--checksum=sha';
@@ -643,6 +643,9 @@ sub createrepo_rpmmd {
   push @updateargs, '--no-database';
   if (-f "$extrep/repodata/repomd.xml") {
     push @updateargs, '--update';
+    # createrepo_c 0.20.0 defaults to keep always additional metadata. We must change
+    # to old behaviour or old data would stay forever when it got removed actually
+    push @createrepoargs, '--discard-additional-metadata';
   }
   if (qsystem($createrepo_bin, '-q', '-c', "$extrep/repocache", @updateargs, @createrepoargs, @legacyargs, $extrep)) {
     die("    createrepo failed: $?\n") unless @updateargs;
@@ -1741,18 +1744,18 @@ sub mapsleimage {
     $rbin =~ s/\.sha256$//;
     $rbin =~ s/\.sha256.asc$//;
     $rbin =~ s/\.(?:bz2|gz|xz|zst)$//;
-    $rbin =~ s/\.(iso|packages|raw|tbz|tgz|tar|qcow2|vdi|vhdfixed|vhdx|vmdk|vmx|vagrant\..*\.box)$//;
+    $rbin =~ s/\.(install\.iso|iso|packages|raw|tbz|tgz|tar|qcow2|vdi|vhdfixed|vhdx|vmdk|vmx|vagrant\..*\.box)$//;
     $rbin =~ s/^ChangeLog\.//;
     $rbin =~ s/\.txt$//;
     # if we did not find it yet, try removing the build number
     # as the ftp trees are stored without
-    $rbin =~ s/-Build\d+(\.\d+)?(\.\d+)?// unless -f "$rdir/$rbin.milestone";
+    $rbin =~ s/-Build\d+(\.\d+)?(\.\d+)?(\.\d+)?// unless -f "$rdir/$rbin.milestone";
     my $milestone = readstr("$rdir/$rbin.milestone", 1);
     chomp($milestone) if defined $milestone;
     $milestone ||= 'GM';
     $milestone = Build::Rpm::expandmacros($data->{'config'}, $milestone) if $milestone =~ /%/;
     $milestone =~ s/[\/\n]/_/sg;
-    $p =~ s/-Build\d+(\.\d+)?(\.\d+)?/-$milestone/;
+    $p =~ s/-Build\d+(\.\d+)?(\.\d+)?(\.\d+)?/-$milestone/;
   }
   $p =~ s/-Media/-DVD/ if $data->{'media'} eq 'dvd';
   $data->{'mapped'}->{$origp} = $p if $p ne $origp;
@@ -2121,6 +2124,8 @@ sub publish {
 	my $q = Build::query("$r/$rbin", 'evra' => 1);
 	next unless $q && defined($q->{'arch'});
 	$p = "$q->{'arch'}/$bin";
+      } elsif ($bin =~ /\.slsa_provenance\.json$/) {
+	next;	# we pick them up with the binaries
       } else {
 	if ($bin =~ /\.iso(?:\.sha256(?:\.asc)?)?$/) {
 	  $p = "iso/$bin";
@@ -2323,6 +2328,29 @@ sub publish {
 	  }
 	}
       }
+
+      if ($rbin =~ /(.*)\.(?:$binsufsre)$/) {
+	# we took a binary. also take provenance if we have it
+	my $rprovenance = "$1.slsa_provenance.json";
+	my $provenance = $p;
+	if ($provenance =~ s/\.(?:$binsufsre)$/.slsa_provenance.json/) {
+	  if (-e "$r/$rprovenance") {
+	    my @s = stat(_);
+	    $bins{$provenance} = "$r/$rprovenance";
+	    $bins_id{$provenance} = "$s[9]/$s[7]/$s[1]";
+	    $binaryorigins->{$provenance} = $repoinfo->{'binaryorigins'}->{$rbin};
+	    $kiwimedium{$provenance} = $kiwimedium if $kiwimedium;
+	    $containers{$provenance} = $containerinfo if $containerinfo;
+	  } else {
+	    delete $bins{$provenance};
+	    delete $bins_id{$provenance};
+	    delete $binaryorigins->{$provenance};
+	    delete $kiwimedium{$provenance};
+	    delete $containers{$provenance};
+	  }
+	}
+      }
+
     }
   }
 

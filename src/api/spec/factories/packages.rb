@@ -76,6 +76,43 @@ FactoryBot.define do
       end
     end
 
+    factory :package_with_link do
+      after(:create) do |package|
+        target_package = create(:package_with_file, project: package.project)
+        PackageKind.create(package_id: package.id, kind: 'link')
+
+        file_content = "<link package=\"#{target_package}\" project=\"#{target_package.project}\" />"
+
+        # NOTE: Enable global write through when writing new VCR cassetes.
+        # ensure the backend knows the project
+        if CONFIG['global_write_through']
+          Backend::Connection.put(
+            "/source/#{CGI.escape(package.project.name)}/#{CGI.escape(package.name)}/_link", file_content
+          )
+        end
+      end
+    end
+
+    factory :package_with_remote_link do
+      transient do
+        remote_project_name { Faker::Lorem.word }
+        remote_package_name { Faker::Lorem.word }
+      end
+      after(:create) do |package, evaluator|
+        remote_project = create(:remote_project, name: evaluator.remote_project_name)
+        PackageKind.create(package_id: package.id, kind: 'link')
+        file_content = "<link package=\"#{evaluator.remote_package_name}\" project=\"#{remote_project.name}\" />"
+
+        # NOTE: Enable global write through when writing new VCR cassetes.
+        # ensure the backend knows the project
+        if CONFIG['global_write_through']
+          Backend::Connection.put(
+            "/source/#{CGI.escape(package.project.name)}/#{CGI.escape(package.name)}/_link", file_content
+          )
+        end
+      end
+    end
+
     factory :package_with_binary do
       transient do
         target_file_name { 'bigfile_archive.tar.gz' }
@@ -108,7 +145,10 @@ FactoryBot.define do
       after(:create) do |package|
         # NOTE: Enable global write through when writing new VCR cassetes.
         # ensure the backend knows the project
-        Backend::Connection.put("/source/#{URI.escape(package.project.name)}/#{URI.escape(package.name)}/_service", '<services/>') if CONFIG['global_write_through']
+        if CONFIG['global_write_through']
+          Backend::Connection.put(Addressable::URI.escape("/source/#{package.project.name}/#{package.name}/_service"),
+                                  '<services/>')
+        end
       end
     end
 
@@ -116,7 +156,10 @@ FactoryBot.define do
       after(:create) do |package|
         # NOTE: Enable global write through when writing new VCR cassetes.
         # ensure the backend knows the project
-        Backend::Connection.put("/source/#{URI.escape(package.project.name)}/#{URI.escape(package.name)}/_service", '<service>broken</service>') if CONFIG['global_write_through']
+        if CONFIG['global_write_through']
+          Backend::Connection.put(Addressable::URI.escape("/source/#{package.project.name}/#{package.name}/_service"),
+                                  '<service>broken</service>')
+        end
       end
     end
 
@@ -131,7 +174,7 @@ FactoryBot.define do
         # ensure the backend knows the project
         if CONFIG['global_write_through']
           full_path = "/source/#{package.project.name}/#{package.name}/#{evaluator.changes_file_name}"
-          Backend::Connection.put(URI.escape(full_path), evaluator.changes_file_content)
+          Backend::Connection.put(Addressable::URI.escape(full_path), evaluator.changes_file_content)
         end
       end
     end
@@ -160,7 +203,7 @@ FactoryBot.define do
         # ensure the backend knows the project
         if CONFIG['global_write_through']
           full_path = "/source/#{package.project.name}/#{package.name}/#{evaluator.kiwi_file_name}"
-          Backend::Connection.put(URI.escape(full_path), evaluator.kiwi_file_content)
+          Backend::Connection.put(Addressable::URI.escape(full_path), evaluator.kiwi_file_content)
         end
       end
     end

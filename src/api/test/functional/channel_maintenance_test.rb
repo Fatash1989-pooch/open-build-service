@@ -645,7 +645,7 @@ class ChannelMaintenanceTests < ActionDispatch::IntegrationTest
     assert_no_xml_tag tag: 'source', attributes: { project: 'My:Maintenance:0', package: 'BaseDistro3.Channel' },
                       parent: { tag: 'action', attributes: { type: 'maintenance_release' } }
     # but it has a source change, so submit action
-    assert_xml_tag tag: 'source', attributes: { project: 'My:Maintenance:0', package: 'BaseDistro3.Channel' },
+    assert_xml_tag tag: 'source', attributes: { project: 'My:Maintenance:0', package: 'BaseDistro3.Channel', rev: 'b8629db76e8cfb1346acf3be7501b25c' },
                    parent: { tag: 'action', attributes: { type: 'submit' } }
     # no release patchinfo into channel
     assert_no_xml_tag tag: 'target', attributes: { project: 'Channel', package: 'patchinfo.0' },
@@ -716,7 +716,7 @@ class ChannelMaintenanceTests < ActionDispatch::IntegrationTest
     assert_xml_tag tag: 'entry', attributes: { name: 'primary.xml.gz' }
     assert_xml_tag tag: 'entry', attributes: { name: 'repomd.xml' }
     assert_xml_tag tag: 'entry', attributes: { name: 'updateinfo.xml.gz' } # by modifyrepo
-    IO.popen("gunzip -cd #{ENV['OBS_BACKEND_TEMP']}/data/repos/BaseDistro3Channel/channel_repo/repodata/updateinfo.xml.gz") do |io|
+    IO.popen("gunzip -cd #{ENV.fetch('OBS_BACKEND_TEMP', nil)}/data/repos/BaseDistro3Channel/channel_repo/repodata/updateinfo.xml.gz") do |io|
       node = Xmlhash.parse(io.read)
     end
     assert_equal "UpdateInfoTagNew-patch_name-#{Time.now.year}-1", node['update']['id']

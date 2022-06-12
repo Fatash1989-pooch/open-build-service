@@ -18,7 +18,6 @@
 @import 'bootstrap_variables/sizes';
 @import 'bootstrap';
 @import 'bootstrap-modal';
-@import "font-awesome-sprockets";
 @import 'font-awesome';
 @import 'tokenfield';
 @import 'links';
@@ -63,12 +62,13 @@
 @import 'sponsors';
 @import 'layout';
 @import 'navbar';
-@import 'notifications_redesign/notifications';
+@import 'notifications';
 @import 'notification_toolbar';
 @import 'sidebar-collapsible';
 @import 'user_profile';
 @import 'long-text';
 @import 'workflow_runs';
+@import 'new_watchlist/watchlist';
 
 html {
     overflow-y: scroll !important;

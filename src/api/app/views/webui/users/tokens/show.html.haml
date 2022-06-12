@@ -1,4 +1,4 @@
-- @pagetitle = "Token - #{@token.name.presence || 'No name'}"
+- @pagetitle = "Token - #{@token.description.presence || 'No Description'}"
 
 .card
   .card-body
@@ -25,7 +25,7 @@
                 %label.col-form-label.font-weight-bold
                   Secret:
                 .input-group
-                  = render CopyToClipboardInputComponent.new(token_string: @token.string)
+                  = render CopyToClipboardInputComponent.new(input_text: @token.string)
               %hr
 
         .form-row
@@ -35,6 +35,15 @@
                 Type:
               %span
                 = @token.token_name
+
+        - if @token.type == 'Token::Workflow'
+          .form-row
+            .col
+              .form-group
+                %label.col-form-label.mr-2.font-weight-bold
+                  Token trigger url:
+                .input-group
+                  = render CopyToClipboardInputComponent.new(input_text: trigger_workflow_url(id: @token.id))
 
         - if @token.package
           .form-row

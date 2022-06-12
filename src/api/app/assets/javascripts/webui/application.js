@@ -35,7 +35,6 @@
 //= require webui/popover.js
 //= require webui/repositories.js
 //= require webui/distributions.js
-//= require webui/users.js
 // FIXME refactor these files
 //= require webui/autocomplete.js
 //= require webui/comment.js
@@ -56,3 +55,4 @@
 //= require webui/navigation.js
 //= require webui/user_profile.js
 //= require webui/long_text.js
+//= require webui/new_watchlist/collapsible_tooltip.js

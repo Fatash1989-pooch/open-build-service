@@ -15,7 +15,9 @@ module Event
       'Event::RequestStatechange' => 'Receive notifications of requests state changes for projects for which you are...',
       'Event::CommentForProject' => 'Receive notifications of comments created on projects for which you are...',
       'Event::CommentForPackage' => 'Receive notifications of comments created on a package for which you are...',
-      'Event::CommentForRequest' => 'Receive notifications of comments created on a request for which you are...'
+      'Event::CommentForRequest' => 'Receive notifications of comments created on a request for which you are...',
+      'Event::RelationshipCreate' => "Receive notifications when someone adds you or your group to a project or package with any of these roles: #{Role.local_roles.to_sentence}.",
+      'Event::RelationshipDelete' => "Receive notifications when someone removes you or your group from a project or package with any of these roles: #{Role.local_roles.to_sentence}."
     }.freeze
 
     class << self
@@ -30,7 +32,8 @@ module Event
       def notification_events
         ['Event::BuildFail', 'Event::ServiceFail', 'Event::ReviewWanted', 'Event::RequestCreate',
          'Event::RequestStatechange', 'Event::CommentForProject', 'Event::CommentForPackage',
-         'Event::CommentForRequest'].map(&:constantize)
+         'Event::CommentForRequest',
+         'Event::RelationshipCreate', 'Event::RelationshipDelete'].map(&:constantize)
       end
 
       def classnames
@@ -251,7 +254,23 @@ module Event
       project = ::Project.find_by_name(payload['project'])
       return [] if project.blank?
 
-      project.watched_projects.map(&:user)
+      project.watched_projects.map(&:user).concat(project.watched_items.map(&:user)).uniq
+    end
+
+    def package_watchers
+      package = Package.get_by_project_and_name(payload['project'], payload['package'], { follow_multibuild: true, follow_project_links: false, use_source: false })
+      return [] if package.blank?
+
+      package.watched_items.map(&:user)
+    rescue Package::Errors::UnknownObjectError, Project::Errors::UnknownObjectError
+      []
+    end
+
+    def request_watchers
+      bs_request = BsRequest.find_by(number: payload['number'])
+      return [] if bs_request.blank?
+
+      bs_request.watched_items.map(&:user)
     end
 
     def _roles(role, project, package = nil)
@@ -276,7 +295,7 @@ module Event
       { event_type: eventtype,
         event_payload: payload,
         notifiable_id: payload['id'],
-        created_at: payload['when'].to_datetime,
+        created_at: payload['when']&.to_datetime,
         title: subject_to_title }
     end
 
@@ -345,7 +364,7 @@ end
 #
 # Table name: events
 #
-#  id          :integer          not null, primary key
+#  id          :bigint           not null, primary key
 #  eventtype   :string(255)      not null, indexed
 #  mails_sent  :boolean          default(FALSE), indexed
 #  payload     :text(65535)

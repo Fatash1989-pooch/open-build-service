@@ -1,8 +1,4 @@
 class Token::Service < Token
-  def self.token_name
-    'runservice'
-  end
-
   def call(options)
     set_triggered_at
     Backend::Api::Sources::Package.trigger_services(options[:project].to_param,
@@ -20,7 +16,7 @@ end
 # Table name: tokens
 #
 #  id           :integer          not null, primary key
-#  name         :string(64)       default("")
+#  description  :string(64)       default("")
 #  scm_token    :string(255)      indexed
 #  string       :string(255)      indexed
 #  triggered_at :datetime

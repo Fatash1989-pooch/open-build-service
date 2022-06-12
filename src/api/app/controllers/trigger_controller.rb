@@ -3,15 +3,13 @@ class TriggerController < ApplicationController
 
   ALLOWED_GITLAB_EVENTS = ['Push Hook', 'Tag Push Hook', 'Merge Request Hook'].freeze
 
-  include Pundit
-
   # Authentication happens with tokens, so extracting the user is not required
   skip_before_action :extract_user
   # Authentication happens with tokens, so no login is required
   skip_before_action :require_login
-  # GitLab/Github send data as parameters which are not strings
-  # e.g. integer PR number (GitHub) and project hash (GitLab)
-  skip_before_action :validate_params, if: :scm_webhook?
+  # SCMs like GitLab/GitHub send data as parameters which are not strings (e.g.: GitHub - PR number is a integer, GitLab - project is a hash)
+  # Other SCMs might also do this, so we're not validating parameters.
+  skip_before_action :validate_params
   after_action :verify_authorized
 
   before_action :validate_gitlab_event, if: :gitlab_webhook?
@@ -50,10 +48,6 @@ class TriggerController < ApplicationController
     request.env['HTTP_X_GITHUB_EVENT'].present?
   end
 
-  def scm_webhook?
-    gitlab_webhook? || github_webhook?
-  end
-
   def validate_gitlab_event
     raise InvalidToken unless request.env['HTTP_X_GITLAB_EVENT'].in?(ALLOWED_GITLAB_EVENTS)
   end
@@ -61,7 +55,7 @@ class TriggerController < ApplicationController
   # AUTHENTICATION
   def set_token
     @token = ::TriggerControllerService::TokenExtractor.new(request).call
-    raise InvalidToken unless @token
+    raise InvalidToken, 'No valid token found' unless @token
   end
 
   def pundit_user

@@ -272,6 +272,7 @@ OBSApi::Application.routes.draw do
         resources :devel_project_changes, controller: 'webui/requests/devel_project_changes', only: [:new, :create], constraints: cons
         resources :submissions, controller: 'webui/requests/submissions', only: [:new, :create], constraints: cons
         resource :files, controller: 'webui/packages/files', only: [:new, :create], constraints: cons
+        put 'toggle_watched_item', controller: 'webui/watched_items', constraints: cons
       end
 
       resources :role_additions, controller: 'webui/requests/role_additions', only: [:new, :create], constraints: cons
@@ -281,6 +282,7 @@ OBSApi::Application.routes.draw do
           post :toggle
         end
       end
+      put 'toggle_watched_item', controller: 'webui/watched_items', constraints: cons
     end
 
     controller 'webui/request' do
@@ -293,6 +295,12 @@ OBSApi::Application.routes.draw do
       get 'request/list_small' => :list_small, as: 'request_list_small'
       post 'request/set_bugowner_request' => :set_bugowner_request
       get 'request/:number/request_action/:id' => :request_action, as: 'request_action'
+    end
+
+    resources :requests, only: [], param: :number, controller: 'webui/bs_requests' do
+      member do
+        put :toggle_watched_item, controller: 'webui/watched_items'
+      end
     end
 
     controller 'webui/search' do
@@ -322,6 +330,9 @@ OBSApi::Application.routes.draw do
           put :update
         end
       end
+
+      resources :beta_features, only: [:index], controller: 'webui/users/beta_features', as: :my_beta_features
+      resource :beta_feature, only: [:update], controller: 'webui/users/beta_features', as: :my_beta_feature
 
       resource :notification, only: [:update], controller: 'webui/users/notifications', as: :my_notification
 

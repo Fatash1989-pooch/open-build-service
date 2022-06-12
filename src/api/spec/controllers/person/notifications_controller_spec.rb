@@ -5,29 +5,8 @@ RSpec.describe Person::NotificationsController do
 
   render_views
 
-  describe 'Check if feature flag is enabled' do
-    before do
-      toggle_notifications_redesign
-      login user
-      get :index, format: :xml
-    end
-
-    context 'Feature :notifications_redesign is enabled' do
-      let(:toggle_notifications_redesign) { Flipper[:notifications_redesign].enable }
-
-      it { expect(response).to have_http_status(:success) }
-    end
-
-    context 'Feature :notifications_redesign is disabled' do
-      let(:toggle_notifications_redesign) { Flipper[:notifications_redesign].disable }
-
-      it { expect(response).to have_http_status(:not_found) }
-    end
-  end
-
   describe 'filter check' do
     before do
-      Flipper[:notifications_redesign].enable
       login user
       get :index, params: params
     end
@@ -50,7 +29,6 @@ RSpec.describe Person::NotificationsController do
       let!(:notifications) { create_list(:web_notification, 2, :request_state_change, subscriber: user) }
 
       before do
-        Flipper[:notifications_redesign].enable
         login user
         get :index, format: :xml
 
@@ -62,6 +40,18 @@ RSpec.describe Person::NotificationsController do
 
       it { expect(response).to have_http_status(:success) }
       it { expect(response.body).to include('<notifications count="2">') }
+
+      context 'filter by notifications_type' do
+        let!(:notifications) { create_list(:web_notification, 2, :request_state_change, subscriber: user, delivered: true) }
+
+        before do
+          login user
+          get :index, params: { format: :xml, notifications_type: 'read' }
+        end
+
+        it { expect(response).to have_http_status(:success) }
+        it { expect(response.body).to include('<notifications count="2">') }
+      end
 
       context 'filter by project finds results' do
         before do
@@ -96,10 +86,6 @@ RSpec.describe Person::NotificationsController do
   describe '#update' do
     let!(:notification) { create(:web_notification, :comment_for_package, subscriber: user) }
 
-    before do
-      Flipper[:notifications_redesign].enable
-    end
-
     context 'called by an unauthorized user' do
       let(:other_user) { create(:confirmed_user, :in_beta) }
 
@@ -118,7 +104,7 @@ RSpec.describe Person::NotificationsController do
       end
 
       it 'toggles the delivered attribute' do
-        expect(notification.reload.delivered).to eq(true)
+        expect(notification.reload.delivered).to be(true)
       end
 
       it { expect(response).to have_http_status(:success) }
